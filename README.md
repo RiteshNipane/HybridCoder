@@ -184,4 +184,4 @@ From the project root, run the backend test suite with:
 
 ## License
 
-This repository does not currently include a license file. Add one before redistributing the project or accepting external contributions.
+HybridCoder is licensed under the [MIT License](LICENSE). This license applies to project materials owned by the repository copyright holder; third-party dependencies and included assets may have separate licenses.
