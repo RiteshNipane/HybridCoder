@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="920" viewBox="0 0 1240 920" role="img" aria-labelledby="title desc">
+  <title id="title">HybridCoder system architecture</title>
+  <desc id="desc">A React browser client sends REST and WebSocket requests to FastAPI. The orchestrator classifies requests, retrieves workspace context, and routes work to Gemini, NVIDIA NIM, or local Ollama. Tool calls use workspace-bounded filesystem and terminal tools. Browser chat history is stored in local storage, and usage data is stored in SQLite.</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#edf4fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#18324d" flood-opacity=".10"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#059669"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172b42; }
+      .title { font-size: 30px; font-weight: 750; letter-spacing: -.5px; }
+      .subtitle { font-size: 14px; fill: #52657a; }
+      .card { fill: #fff; stroke: #d7e2ee; stroke-width: 1.5; rx: 16; filter: url(#shadow); }
+      .head { font-size: 17px; font-weight: 700; }
+      .body { font-size: 13px; fill: #52657a; }
+      .small { font-size: 12px; fill: #52657a; }
+      .label { font-size: 11px; font-weight: 700; letter-spacing: .8px; fill: #64748b; }
+      .line { fill: none; stroke: #64748b; stroke-width: 2.2; marker-end: url(#arrow); }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrow-blue); }
+      .line-green { fill: none; stroke: #059669; stroke-width: 2.4; marker-end: url(#arrow-green); }
+      .dashed { stroke-dasharray: 6 6; }
+      .chip { font-size: 11px; font-weight: 650; }
+    </style>
+  </defs>
+
+  <rect width="1240" height="920" rx="24" fill="url(#canvas)"/>
+  <text x="52" y="58" class="title">HybridCoder system architecture</text>
+  <text x="52" y="84" class="subtitle">A browser interface, a context-aware orchestrator, three model providers, and workspace-bounded tools.</text>
+
+  <!-- Main request path -->
+  <rect x="48" y="120" width="270" height="174" class="card"/>
+  <rect x="48" y="120" width="270" height="8" rx="4" fill="#0891b2"/>
+  <text x="72" y="160" class="label">CLIENT</text>
+  <text x="72" y="190" class="head">Browser application</text>
+  <text x="72" y="218" class="body">React, TypeScript, Zustand</text>
+  <text x="72" y="242" class="body">Chat, workspace picker, file view</text>
+  <text x="72" y="266" class="body">Streaming status and model activity</text>
+
+  <rect x="390" y="120" width="260" height="174" class="card"/>
+  <rect x="390" y="120" width="260" height="8" rx="4" fill="#4f46e5"/>
+  <text x="414" y="160" class="label">API</text>
+  <text x="414" y="190" class="head">FastAPI backend</text>
+  <text x="414" y="218" class="body">REST workspace and status APIs</text>
+  <text x="414" y="242" class="body">WebSocket chat and stream events</text>
+  <text x="414" y="266" class="body">Workspace setup and usage endpoints</text>
+
+  <rect x="720" y="120" width="470" height="174" class="card"/>
+  <rect x="720" y="120" width="470" height="8" rx="4" fill="#7c3aed"/>
+  <text x="746" y="160" class="label">COORDINATION</text>
+  <text x="746" y="190" class="head">Coding orchestrator</text>
+  <text x="746" y="218" class="body">Loads conversation history and retrieves relevant workspace files</text>
+  <text x="746" y="242" class="body">Chooses a direct answer, coding workflow, or explicit model mode</text>
+  <text x="746" y="266" class="body">Passes plans, reviews, tool results, and context between model calls</text>
+
+  <path d="M318 207 H382" class="line"/>
+  <text x="321" y="193" class="small">REST + WebSocket</text>
+  <path d="M650 207 H712" class="line"/>
+
+  <!-- Browser storage -->
+  <rect x="48" y="332" width="270" height="104" class="card"/>
+  <text x="72" y="366" class="head">Browser local storage</text>
+  <text x="72" y="391" class="body">Keeps conversations across refreshes</text>
+  <text x="72" y="414" class="small">Selected chat history is sent with requests</text>
+  <path d="M183 294 V324" class="line dashed"/>
+
+  <!-- Routing -->
+  <rect x="390" y="342" width="800" height="132" class="card"/>
+  <text x="418" y="379" class="label">ROUTING AND CONTEXT</text>
+  <text x="418" y="410" class="head">Intent classifier and context retrieval</text>
+  <text x="418" y="437" class="body">Rule-based intent classification with an optional fast Gemini tie-break</text>
+  <text x="418" y="459" class="body">Workspace scanning, relevant-file retrieval, escalation, and tool execution</text>
+  <path d="M955 294 V334" class="line"/>
+  <text x="968" y="319" class="small">route request</text>
+
+  <!-- Model providers -->
+  <path d="M590 474 C590 512 210 500 210 532" class="line-blue"/>
+  <path d="M790 474 V532" class="line"/>
+  <path d="M990 474 C990 512 1030 500 1030 532" class="line-green"/>
+
+  <rect x="48" y="542" width="350" height="170" class="card"/>
+  <rect x="48" y="542" width="8" height="170" rx="4" fill="#2563eb"/>
+  <text x="76" y="581" class="label">CLOUD EXPERT</text>
+  <text x="76" y="612" class="head">Google Gemini</text>
+  <text x="76" y="640" class="body">Default: gemini-3.5-flash-lite</text>
+  <text x="76" y="664" class="body">Direct answers, planning, intent tie-breaks</text>
+  <text x="76" y="688" class="body">Optional higher-capability model in settings</text>
+
+  <rect x="445" y="542" width="350" height="170" class="card"/>
+  <rect x="445" y="542" width="8" height="170" rx="4" fill="#7c3aed"/>
+  <text x="473" y="581" class="label">CLOUD REVIEWER / FALLBACK</text>
+  <text x="473" y="612" class="head">NVIDIA NIM</text>
+  <text x="473" y="640" class="body">Model selected by NVIDIA_MODEL</text>
+  <text x="473" y="664" class="body">Plan critique, second opinion, fallback</text>
+  <text x="473" y="688" class="body">Configured with NVIDIA API credentials</text>
+
+  <rect x="842" y="542" width="350" height="170" class="card"/>
+  <rect x="842" y="542" width="8" height="170" rx="4" fill="#059669"/>
+  <text x="870" y="581" class="label">LOCAL IMPLEMENTER</text>
+  <text x="870" y="612" class="head">Ollama with Qwen Coder</text>
+  <text x="870" y="640" class="body">Default: qwen2.5-coder:7b-instruct-q4_K_M</text>
+  <text x="870" y="664" class="body">Local coding, edits, and offline route</text>
+  <text x="870" y="688" class="body">Model tag can be changed in environment settings</text>
+
+  <!-- Workspace tools and usage storage -->
+  <path d="M1018 712 V750 H580 V768" class="line-green"/>
+  <text x="773" y="746" class="small">workspace tool calls</text>
+
+  <rect x="194" y="778" width="610" height="104" class="card"/>
+  <text x="222" y="814" class="label">WORKSPACE TOOLS</text>
+  <text x="222" y="842" class="head">Filesystem, terminal, scanner, tests, and Git</text>
+  <text x="222" y="865" class="body">Path operations are checked against the active workspace boundary.</text>
+
+  <rect x="860" y="778" width="332" height="104" class="card"/>
+  <text x="888" y="814" class="label">USAGE STORAGE</text>
+  <text x="888" y="842" class="head">SQLite usage tracker</text>
+  <text x="888" y="865" class="body">Records provider usage and request metadata.</text>
+  <path d="M1125 294 V319 H1207 V760 H1030 V770" class="line dashed"/>
+
+  <text x="48" y="907" class="small">Model calls are separate. The orchestrator supplies only the conversation, plans, files, and tool results needed for each step.</text>
+</svg>

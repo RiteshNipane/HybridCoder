@@ -1,0 +1,33 @@
+{
+  "default_mode": "AUTO",
+  "auto_routing": {
+    "planning_model": "gemini",
+    "implementation_model": "local",
+    "review_model": "gemini",
+    "escalation_model": "grok"
+  },
+  "escalation": {
+    "enabled": true,
+    "max_retries": 3,
+    "local_retries_before_escalation": 1
+  },
+  "cost_limits": {
+    "daily_gemini_requests": 100,
+    "daily_grok_requests": 50
+  },
+  "task_routing": {
+    "architecture_analysis": "gemini",
+    "code_generation": "local",
+    "code_review": "gemini",
+    "bug_fix": "local",
+    "refactoring": "local",
+    "documentation": "gemini",
+    "complex_debugging": "grok",
+    "security_audit": "grok"
+  },
+  "thresholds": {
+    "complexity_score_for_escalation": 7,
+    "token_length_for_cloud": 2048,
+    "max_local_context_tokens": 4096
+  }
+}

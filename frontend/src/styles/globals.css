@@ -1,0 +1,77 @@
+@import 'tailwindcss';
+@import 'ascii-things/ui.css';
+@import 'highlight.js/styles/github-dark.css';
+
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-cyan-400: #00d4ff;
+  --color-cyan-500: #00b4d8;
+  --color-cyan-600: #0096c7;
+}
+
+:root {
+  --bg-color: #07080d;
+  --text-color: #f3f4f6;
+  --accent-cyan: #00d4ff;
+  --panel-bg: rgba(13, 17, 23, 0.7);
+  --border-color: rgba(255, 255, 255, 0.1);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Glassmorphism helpers */
+.glass-panel {
+  background: var(--panel-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-color);
+}
+
+/* Keyframe animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+pre code.hljs {
+  padding: 0 !important;
+  background: transparent !important;
+}
