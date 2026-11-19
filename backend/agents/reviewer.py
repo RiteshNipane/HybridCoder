@@ -1,6 +1,6 @@
 """
 backend/agents/reviewer.py
-Independent code reviewer agent using expert cloud models (Gemini or Grok).
+Independent code reviewer agent using peer expert cloud models (Gemini or NVIDIA NIM).
 Provides architectural critique, security audits, and second-opinion reviews.
 """
 
@@ -46,7 +46,7 @@ Brief overview of changes.
 
 class CodeReviewerAgent:
     """
-    Independent reviewer using cloud expert models (Gemini / Grok).
+    Independent reviewer using either cloud expert model (Gemini / NVIDIA NIM).
     Verifies changes before committing or finalizing implementations.
     """
 
@@ -77,7 +77,7 @@ class CodeReviewerAgent:
             "Please provide your critical review."
         )
 
-        chain = [preferred_provider] if preferred_provider else [ProviderName.GEMINI, ProviderName.NVIDIA]
+        chain = [preferred_provider] if preferred_provider else [ProviderName.NVIDIA, ProviderName.GEMINI]
         # Filter available
         chain = [p for p in chain if (p == ProviderName.GEMINI and self._cfg.gemini_available) or (p in (ProviderName.NVIDIA, ProviderName.GROK) and self._cfg.nvidia_available)]
 

@@ -11,13 +11,13 @@ interface ChatInputProps {
 }
 
 const MODEL_MODES: { value: ModelMode; label: string; desc: string }[] = [
-  { value: 'AUTO', label: 'AUTO', desc: 'Gemini (Plan) + Local Qwen (Code) + NVIDIA NIM (Review)' },
-  { value: 'GEMINI', label: 'GEMINI', desc: 'Google Gemini 3.8 Flash (Primary Expert)' },
-  { value: 'NVIDIA', label: 'NVIDIA NIM', desc: 'NVIDIA NIM (Secondary Expert / Reviewer)' },
+  { value: 'AUTO', label: 'AUTO', desc: 'NVIDIA NIM cloud expert + Local Qwen; Gemini fallback' },
+  { value: 'GEMINI', label: 'GEMINI', desc: 'Google Gemini cloud expert' },
+  { value: 'NVIDIA', label: 'NVIDIA NIM', desc: 'NVIDIA NIM cloud expert for answers, planning, architecture, and review' },
   { value: 'LOCAL', label: 'LOCAL QWEN', desc: 'Qwen2.5-Coder 7B Q4 (Offline GPU/CPU)' },
   { value: 'GEMINI+LOCAL', label: 'GEMINI + LOCAL', desc: 'Gemini Architecture + Local Implementation' },
   { value: 'NVIDIA+LOCAL', label: 'NVIDIA + LOCAL', desc: 'NVIDIA Architecture + Local Implementation' },
-  { value: 'ALL', label: 'ALL MODELS', desc: 'Gemini + NVIDIA NIM + Local Qwen Collaborative' },
+  { value: 'ALL', label: 'ALL MODELS', desc: 'NVIDIA NIM planning + Local Qwen; Gemini fallback' },
 ];
 
 export const ChatInput: React.FC<ChatInputProps> = ({ onSend, onStop, isStreaming = false }) => {
@@ -162,7 +162,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, onStop, isStreamin
 
       <div className="flex items-center justify-between mt-1.5 px-2 text-[10px] text-gray-500">
         <span>Shift + Enter for new line • Enter to send</span>
-        <span>Hybrid team: Gemini planner • NVIDIA reviewer • Local Qwen implementer</span>
+        <span>Default cloud expert: NVIDIA NIM • Gemini fallback • Local Qwen implementation</span>
       </div>
     </div>
   );

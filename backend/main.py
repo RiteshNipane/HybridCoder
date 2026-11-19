@@ -98,9 +98,12 @@ async def _safe_send(websocket: WebSocket, payload: dict) -> None:
 async def websocket_chat_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("WebSocket client connected")
+    receive_task: Optional[asyncio.Task[str]] = asyncio.create_task(websocket.receive_text())
     try:
         while True:
-            data = await websocket.receive_text()
+            assert receive_task is not None
+            data = await receive_task
+            receive_task = asyncio.create_task(websocket.receive_text())
             try:
                 payload = json.loads(data)
             except json.JSONDecodeError:
@@ -111,6 +114,15 @@ async def websocket_chat_endpoint(websocket: WebSocket) -> None:
 
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
+                continue
+
+            if msg_type == "stop":
+                conv_id = payload.get("conversationId") or payload.get("conversation_id")
+                await _safe_send(websocket, {
+                    "type": "cancelled",
+                    "conversationId": conv_id,
+                    "was_running": False,
+                })
                 continue
 
             if msg_type in ("chat", "send_message"):
@@ -166,26 +178,81 @@ async def websocket_chat_endpoint(websocket: WebSocket) -> None:
 
                 pump_task = asyncio.create_task(_pump())  # inherits the listener context
                 activity.reset_listener(token)
+                queue_task: Optional[asyncio.Task] = asyncio.create_task(queue.get())
+                cancelled = False
                 try:
                     while True:
-                        kind, data = await queue.get()
-                        if kind == "end":
-                            break
-                        if kind == "model":
-                            await _safe_send(websocket, {"type": "model_activity", "conversationId": conv_id, **data})
-                        elif kind == "chunk":
-                            data["conversationId"] = conv_id
-                            await _safe_send(websocket, data)
-                        elif kind == "error":
-                            await websocket.send_json({"type": "error", "error": str(data), "conversationId": conv_id})
+                        assert queue_task is not None and receive_task is not None
+                        completed, _ = await asyncio.wait(
+                            {queue_task, receive_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+
+                        # Drain generated events first if both the stream and
+                        # socket receive completed in the same event-loop turn.
+                        if queue_task in completed:
+                            kind, chunk = queue_task.result()
+                            if kind == "end":
+                                break
+                            if kind == "model":
+                                await _safe_send(websocket, {"type": "model_activity", "conversationId": conv_id, **chunk})
+                            elif kind == "chunk":
+                                chunk["conversationId"] = conv_id
+                                await _safe_send(websocket, chunk)
+                            elif kind == "error":
+                                await _safe_send(websocket, {"type": "error", "error": str(chunk), "conversationId": conv_id})
+                            queue_task = asyncio.create_task(queue.get())
+
+                        if receive_task in completed:
+                            incoming = receive_task.result()
+                            receive_task = asyncio.create_task(websocket.receive_text())
+                            try:
+                                control = json.loads(incoming)
+                            except json.JSONDecodeError:
+                                await _safe_send(websocket, {"type": "error", "error": "Invalid JSON payload", "conversationId": conv_id})
+                                continue
+
+                            control_type = control.get("type", "chat")
+                            if control_type == "ping":
+                                await _safe_send(websocket, {"type": "pong"})
+                            elif control_type == "stop":
+                                requested_conv = control.get("conversationId") or control.get("conversation_id")
+                                if not requested_conv or requested_conv == conv_id:
+                                    pump_task.cancel()
+                                    await asyncio.gather(pump_task, return_exceptions=True)
+                                    cancelled = True
+                                    await _safe_send(websocket, {
+                                        "type": "cancelled",
+                                        "conversationId": conv_id,
+                                        "was_running": True,
+                                    })
+                                    break
+                            elif control_type in ("chat", "send_message"):
+                                waiting_conv = control.get("conversationId") or control.get("conversation_id", "default")
+                                await _safe_send(websocket, {
+                                    "type": "busy",
+                                    "conversationId": waiting_conv,
+                                    "message": "A request is already running. Stop it or wait for it to finish before sending another.",
+                                })
                 finally:
+                    if queue_task is not None and not queue_task.done():
+                        queue_task.cancel()
+                        await asyncio.gather(queue_task, return_exceptions=True)
                     if not pump_task.done():
                         pump_task.cancel()
+                        await asyncio.gather(pump_task, return_exceptions=True)
+
+                if cancelled:
+                    logger.info("Cancelled active chat generation for conversation %s", conv_id)
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
     except Exception as e:
         logger.error("Unexpected WebSocket error: %s", e)
+    finally:
+        if receive_task is not None and not receive_task.done():
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

@@ -7,15 +7,18 @@ Implements the 3-model hybrid architecture (Gemini + Grok + Local Qwen).
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import re
-from datetime import datetime
+import time
+import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from backend.agents.expert_agent import ExpertAgent
 from backend.agents.local_coder import LocalCoderAgent
 from backend.agents.reviewer import CodeReviewerAgent
+from backend.agents.self_correction import SelfCorrectionLoop
 from backend.config import Config, RoutingMode, get_config
 from backend.providers.gemini_provider import GeminiProvider
 from backend.routing.escalation import EscalationEngine
@@ -27,6 +30,7 @@ from backend.routing.intent import (
     strip_override,
 )
 from backend.routing.model_router import ModelRouter
+from backend.routing.task_complexity import classify_task_complexity
 from backend.scanner.context_retriever import retrieve_relevant_context
 from backend.scanner.repository_scanner import RepositoryContext, scan_repository
 from backend.schemas.task import (
@@ -42,10 +46,11 @@ from backend.schemas.task import (
     TaskType,
 )
 from backend.storage.usage_tracker import UsageTracker
+from backend.storage.run_telemetry import append_task_run
 from backend.task_manager import TaskManager
 from backend.tools.filesystem import create_directory, create_file, delete_file, edit_file, list_files, read_file, write_file
 from backend.tools.git_manager import create_checkpoint, git_diff, git_status
-from backend.tools.testing import run_project_tests
+from backend.tools.verification import run_scoped_checks
 from backend.tools.tool_executor import (
     ToolExecutor,
     has_tool_calls,
@@ -60,7 +65,7 @@ logger = logging.getLogger(__name__)
 class CodingOrchestrator:
     """
     Central orchestrator for the autonomous coding agent.
-    Coordinates planning (Gemini), review (NVIDIA/Gemini), and local implementation (Qwen).
+    Coordinates reasoning and planning with peer Gemini/NVIDIA experts and local Qwen implementation.
     Implements a full Claude Code-style autonomous agent with direct tool execution.
     """
 
@@ -124,47 +129,82 @@ class CodingOrchestrator:
     # ------------------------------------------------------------------
 
     async def apply_file_edits(self, edits: List[FileEdit]) -> List[str]:
-        """Apply a list of file edits to the workspace.
-
-        Edits whose path points outside the workspace and its parent project
-        are SKIPPED and recorded in ``self.skipped_edits``.
-        """
+        """Validate all proposed edits, then apply them as one rollback-safe transaction."""
         root = (self._workspace_root or self._cfg.workspace_root or Path.cwd()).resolve()
         self.skipped_edits = []
-        applied_paths: List[str] = []
+        projected: Dict[Path, Optional[str]] = {}
+        originals: Dict[Path, Optional[str]] = {}
+        relative_paths: Dict[Path, str] = {}
         for edit in edits:
             raw = (edit.path or "").strip().strip("\"'`")
             try:
                 candidate = Path(raw)
                 full_path = (candidate if candidate.is_absolute() else root / candidate).resolve()
                 rel = full_path.relative_to(root)
-                target_root = root
             except Exception:
                 logger.warning("Skipping edit outside workspace: %s", raw)
                 self.skipped_edits.append(raw)
                 continue
-
             rel_path = str(rel).replace("\\", "/")
-            try:
-                if edit.original_content:
-                    await edit_file(
-                        path=full_path,
-                        old_content=edit.original_content,
-                        new_content=edit.new_content,
-                        workspace_root=target_root,
+            if full_path.exists() and not full_path.is_file():
+                raise ValueError(f"Patch target is not a regular file: {rel_path}")
+            if full_path not in projected:
+                existing = await read_file(full_path, root) if full_path.is_file() else None
+                originals[full_path] = existing
+                projected[full_path] = existing
+                relative_paths[full_path] = rel_path
+
+            current = projected[full_path]
+            if edit.original_content is not None:
+                if current is None:
+                    raise ValueError(f"Patch target does not exist: {rel_path}")
+                search = edit.original_content
+                matches = current.count(search) if search else 0
+                if matches != 1:
+                    raise ValueError(
+                        f"Patch for {rel_path} must match one exact section; found {matches} matches. "
+                        "Read the current file and provide a smaller, unique search block."
                     )
+                projected[full_path] = current.replace(search, edit.new_content, 1)
+            else:
+                if current is not None:
+                    raise ValueError(
+                        f"Refusing to replace existing file {rel_path} with a full-file response; "
+                        "use a structured search/replace patch."
+                    )
+                projected[full_path] = edit.new_content
+
+        # Validate every final file before any write takes place.
+        from backend.tools.verification import validate_source_text_async
+        for full_path, new_content in projected.items():
+            if new_content is not None:
+                await validate_source_text_async(full_path, new_content, root)
+
+        written: List[Path] = []
+        try:
+            for full_path, new_content in projected.items():
+                if new_content is None:
+                    continue
+                written.append(full_path)
+                await write_file(full_path, new_content, root)
+                logger.info("Applied validated patch to: %s", relative_paths[full_path])
+        except Exception:
+            for full_path in reversed(written):
+                original = originals[full_path]
+                if original is None:
+                    full_path.unlink(missing_ok=True)
+                    parent = full_path.parent
+                    while parent != root and parent.is_dir():
+                        try:
+                            parent.rmdir()
+                        except OSError:
+                            break
+                        parent = parent.parent
                 else:
-                    await write_file(
-                        path=full_path,
-                        content=edit.new_content,
-                        workspace_root=target_root,
-                    )
-                applied_paths.append(rel_path)
-                logger.info("Applied edit to: %s", rel_path)
-            except Exception as e:
-                logger.error("Failed to apply edit to %s: %s", rel_path, e)
-                raise
-        return applied_paths
+                    await write_file(full_path, original, root)
+            raise
+
+        return [relative_paths[path] for path in written]
 
     def _skipped_status(self) -> Optional[Dict[str, Any]]:
         """Status event listing edits that were skipped because they pointed outside the workspace."""
@@ -300,8 +340,8 @@ class CodingOrchestrator:
                 # Folder creation is a direct filesystem operation, not a task
                 # that benefits from a plan/critique/implementation round trip.
                 provider = (
-                    ProviderName.GEMINI if self._cfg.gemini_available
-                    else ProviderName.NVIDIA if self._cfg.nvidia_available
+                    ProviderName.NVIDIA if self._cfg.nvidia_available
+                    else ProviderName.GEMINI if self._cfg.gemini_available
                     else ProviderName.OLLAMA
                 )
                 async for chunk in self._run_claude_code_agent(
@@ -325,19 +365,42 @@ class CodingOrchestrator:
     # ------------------------------------------------------------------
 
     async def _classify_with_llm(self, question: str) -> str:
-        """Use the low-demand Gemini model for a short tie-break; rules remain fallback."""
-        fast_config = self._cfg.model_copy(update={
-            "gemini_model": self._cfg.gemini_model_fast,
-            "gemini_timeout": 5,
-            "gemini_max_retries": 1,
-        })
-        provider = GeminiProvider(fast_config)
-        text, _usage = await provider.complete(
-            prompt=question,
-            max_tokens=32,
-            temperature=0.0,
-        )
-        return text
+        """Prefer NVIDIA for a short intent tie-break; use Gemini if NIM is unavailable."""
+        if self._cfg.nvidia_available:
+            try:
+                result = await self._escalation.run(
+                    prompt=question,
+                    system_prompt="Classify this message using exactly one requested label. Return only the label.",
+                    hint_chain=[ProviderName.NVIDIA],
+                    max_tokens=32,
+                    temperature=0.0,
+                )
+                return result.text
+            except Exception as exc:
+                if not self._cfg.gemini_available:
+                    raise
+                logger.info("NVIDIA intent tie-break failed; trying Gemini: %s", exc)
+
+        if self._cfg.gemini_available:
+            fast_config = self._cfg.model_copy(update={
+                "gemini_model": self._cfg.gemini_model_fast,
+                "gemini_timeout": 5,
+                "gemini_max_retries": 1,
+            })
+            provider = GeminiProvider(fast_config)
+            try:
+                text, _usage = await provider.complete(
+                    prompt=question,
+                    max_tokens=32,
+                    temperature=0.0,
+                )
+                return text
+            except Exception as exc:
+                raise RuntimeError(f"Gemini intent tie-break failed: {exc}") from exc
+            finally:
+                await provider.aclose()
+
+        raise RuntimeError("No cloud model is available for an intent tie-break")
 
     @staticmethod
     def _history_text(history: List[ConversationMessage], limit: int = 20) -> str:
@@ -386,7 +449,7 @@ class CodingOrchestrator:
                     "subtasks or file changes unless the user explicitly asks for them. "
                     "Use markdown, and code blocks only when code is actually useful."
                 ),
-                chain=[ProviderName.GEMINI, ProviderName.NVIDIA, ProviderName.OLLAMA],
+                chain=[ProviderName.NVIDIA, ProviderName.GEMINI, ProviderName.OLLAMA],
             )
             note = self._fallback_note(res)
             if note:
@@ -405,15 +468,36 @@ class CodingOrchestrator:
         history: Optional[List[ConversationMessage]] = None,
         provider: Optional[ProviderName] = None,
         max_steps: int = 15,
+        route_decision: Optional[Dict[str, str]] = None,
+        _repair_depth: int = 0,
+        _run_state: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Run an autonomous, Claude Code-style agentic workflow with real filesystem execution.
-        The agent directly inspects, creates, edits, and searches files, and runs terminal commands.
+        Run a tool-using agent, verify its edits, and repair failed checks within a fixed budget.
         """
+        root_call = _run_state is None
+        state = _run_state or {
+            "task_id": str(uuid.uuid4()),
+            "started": time.perf_counter(),
+            "route": (route_decision or {}).get("route", "local" if provider == ProviderName.OLLAMA else "cloud"),
+            "complexity": (route_decision or {}).get("complexity", "unspecified"),
+            "route_reason": (route_decision or {}).get("reason", "explicit provider selection"),
+            "retry_count": 0,
+            "escalation_count": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "changed_files": [],
+            "snapshots": {},
+            "test_before": None,
+            "test_after": None,
+            "cloud_repair_attempted": False,
+            "agent_errors": [],
+            "success": False,
+        }
         history_list = history or []
         provider_name = provider or (
-            ProviderName.GEMINI if self._cfg.gemini_available
-            else (ProviderName.NVIDIA if self._cfg.nvidia_available else ProviderName.OLLAMA)
+            ProviderName.OLLAMA
         )
         yield {
             "type": "status",
@@ -427,9 +511,9 @@ class CodingOrchestrator:
             if role_str in ("user", "assistant") and m.content:
                 formatted_history.append({"role": role_str, "content": m.content[:4000]})
 
-        # Define LLM completion callable for the tool loop
+        # A local-first pass stays local. Cloud passes still have a local fallback
+        # in the escalation chain, so provider outages do not stall the task.
         async def _llm_complete(messages: List[Dict[str, str]], system_prompt: str) -> str:
-            # If Ollama local
             if provider_name == ProviderName.OLLAMA:
                 text, usage = await self._local_coder.provider.complete_chat(
                     messages=messages,
@@ -437,9 +521,11 @@ class CodingOrchestrator:
                     temperature=0.1,
                 )
                 await self._tracker.record(usage)
+                state["prompt_tokens"] += int(usage.prompt_tokens or 0)
+                state["completion_tokens"] += int(usage.completion_tokens or 0)
+                state["total_tokens"] += int(usage.total_tokens or 0)
                 return text
 
-            # Cloud provider via escalation engine
             lines = []
             for msg in messages:
                 role = msg.get("role", "user").upper()
@@ -458,10 +544,18 @@ class CodingOrchestrator:
                 chain=chain,
                 temperature=0.1,
             )
+            state["escalation_count"] += sum(1 for attempt in res.attempts if not attempt.success)
+            state["prompt_tokens"] += int(res.usage.prompt_tokens or 0)
+            state["completion_tokens"] += int(res.usage.completion_tokens or 0)
+            state["total_tokens"] += int(res.usage.total_tokens or 0)
+            state["last_provider"] = res.provider.value
             return res.text
 
-        all_modified_files: List[str] = []
-        full_assistant_output: List[str] = []
+        if root_call:
+            baseline_paths = re.findall(r"--- File: (.*?) ---", workspace_context)
+            if baseline_paths:
+                yield {"type": "status", "message": "Recording scoped test baseline..."}
+                state["test_before"] = await run_scoped_checks(self._workspace_root, baseline_paths)
 
         # Run the agentic tool-use loop
         async for ev in run_agentic_loop(
@@ -474,7 +568,7 @@ class CodingOrchestrator:
             ev_type = ev.get("type")
             if ev_type == "text":
                 content = ev.get("content", "")
-                full_assistant_output.append(content)
+                state.setdefault("assistant_output", []).append(content)
                 yield {"type": "text", "content": content, "model": provider_name.value}
 
             elif ev_type == "tool_call":
@@ -491,55 +585,204 @@ class CodingOrchestrator:
                 t_name = ev.get("name", "")
                 out = ev.get("output", "")
                 is_err = ev.get("error", False)
+                change = ev.pop("change", None)
                 yield ev
+                if is_err:
+                    state["agent_errors"].append(out[-2000:])
 
-                # If this tool created or wrote a file, record it and notify the UI
-                if t_name in ("write_file", "create_file", "create_directory", "edit_file") and not is_err:
+                if t_name in ("write_file", "create_file", "create_directory", "edit_file", "delete_file") and not is_err:
                     target_path = None
-                    for line in out.splitlines():
-                        if "Written:" in line or "Created:" in line or "Edited:" in line:
-                            parts = line.split(":", 1)
-                            if len(parts) > 1:
-                                target_path = parts[1].split("(")[0].strip()
+                    if change:
+                        target_path = change.get("path")
+                        rel = str(target_path).replace("\\", "/")
+                        snapshot = state["snapshots"].setdefault(rel, {"before": change.get("before"), "after": None})
+                        snapshot["after"] = change.get("after")
+                        if rel not in state["changed_files"]:
+                            state["changed_files"].append(rel)
+                    else:
+                        for line in out.splitlines():
+                            if "Written:" in line or "Created:" in line or "Edited:" in line:
+                                parts = line.split(":", 1)
+                                if len(parts) > 1:
+                                    target_path = parts[1].split("(")[0].strip()
                     if target_path:
                         rel = target_path
                         try:
                             rel = str(Path(target_path).relative_to(self._workspace_root)).replace("\\", "/")
                         except Exception:
-                            pass
-                        if t_name != "create_directory":
-                            all_modified_files.append(rel)
+                            rel = str(target_path).replace("\\", "/")
+                        if t_name not in ("create_directory",) and rel not in state["changed_files"]:
+                            state["changed_files"].append(rel)
                         yield {
                             "type": "edit",
                             "files": [rel],
-                            "action": "create" if t_name in ("create_file", "create_directory") else "edit",
+                            "action": "delete" if t_name == "delete_file" else "create" if t_name in ("create_file", "create_directory") else "edit",
                         }
 
             elif ev_type == "error":
+                state["agent_errors"].append(str(ev.get("error", ""))[-2000:])
                 yield ev
 
-        # Fallback: scan any fenced file edits that the LLM wrote in prose without a tool call
-        joined_output = "".join(full_assistant_output)
+        # Compatibility fallback for models that returned structured patch blocks
+        # in prose instead of using the edit_file tool.
+        joined_output = "".join(state.get("assistant_output", []))
         additional_edits = self._local_coder.extract_file_edits(joined_output)
         if additional_edits and self._workspace_root:
             try:
                 applied = await self.apply_file_edits(additional_edits)
                 if applied:
-                    all_modified_files.extend(applied)
+                    for rel in applied:
+                        if rel not in state["changed_files"]:
+                            state["changed_files"].append(rel)
+                        if rel not in state["snapshots"]:
+                            state["snapshots"][rel] = {"before": None, "after": None}
+                        path = (self._workspace_root / rel).resolve()
+                        state["snapshots"][rel]["after"] = await read_file(path, self._workspace_root)
                     yield {"type": "edit", "files": applied}
             except Exception as e:
                 logger.warning("Failed applying fallback file edits: %s", e)
+                state["agent_errors"].append(str(e)[-2000:])
 
-        # Run tests if files were modified
-        if all_modified_files and self._workspace_root:
-            try:
-                test_results = await run_project_tests(self._workspace_root)
-                if test_results and (test_results.get("passed", 0) > 0 or test_results.get("failed", 0) > 0):
-                    yield {"type": "test", "results": test_results}
-            except Exception:
-                pass
+        changed_files = state["changed_files"]
+        test_results: Optional[dict[str, Any]] = None
+        if changed_files:
+            yield {"type": "status", "message": "Running scoped tests or compiler checks..."}
+            test_results = await run_scoped_checks(self._workspace_root, changed_files)
+            state["test_after"] = test_results
+            state["success"] = bool(test_results.get("check_passed"))
+            yield {"type": "test", "results": test_results}
+        elif state["agent_errors"]:
+            state["success"] = False
+        else:
+            state["success"] = True
 
+        async def persist_telemetry() -> None:
+            if not root_call or state.get("telemetry_written"):
+                return
+            state["telemetry_written"] = True
+            await append_task_run({
+                "task_id": state["task_id"],
+                "route": state["route"],
+                "complexity": state["complexity"],
+                "route_reason": state["route_reason"],
+                "provider": state.get("last_provider", provider_name.value),
+                "escalation_count": state["escalation_count"],
+                "local_retry_count": state["retry_count"],
+                "duration_ms": round((time.perf_counter() - state["started"]) * 1000),
+                "prompt_tokens": state["prompt_tokens"],
+                "completion_tokens": state["completion_tokens"],
+                "total_tokens": state["total_tokens"],
+                "test_before": self._telemetry_check(state.get("test_before")),
+                "test_after": self._telemetry_check(state.get("test_after")),
+                "changed_files": changed_files,
+                "success": state["success"],
+            })
+
+        def failure_prompt(result: Optional[dict[str, Any]], compact: bool = False) -> str:
+            diff_parts: list[str] = []
+            snippets: list[str] = []
+            for rel, snapshot in state["snapshots"].items():
+                before = (snapshot.get("before") or "").splitlines(keepends=True)
+                after = (snapshot.get("after") or "").splitlines(keepends=True)
+                diff_parts.extend(difflib.unified_diff(before, after, fromfile=f"a/{rel}", tofile=f"b/{rel}"))
+                path = (self._workspace_root / rel).resolve()
+                try:
+                    path.relative_to(self._workspace_root.resolve())
+                    if path.is_file():
+                        snippets.append(f"--- Current file {rel} ---\n{path.read_text(encoding='utf-8', errors='replace')[:1800 if compact else 5000]}")
+                except (ValueError, OSError):
+                    continue
+            output_limit = 4000 if compact else 12000
+            diff_limit = 2500 if compact else 10000
+            snippet_limit = 2500 if compact else 8000
+            exact_output = str((result or {}).get("output", ""))[-output_limit:]
+            recent_context = self._history_text(history_list, limit=6)[-2500:]
+            return (
+                f"Original task: {prompt}\n\n"
+                f"Recent conversation context:\n{recent_context or '(none)'}\n\n"
+                f"Check command: {(result or {}).get('command', 'local model call failed')}\n"
+                f"Exact failure output:\n{exact_output or '; '.join(state['agent_errors'][-3:])}\n\n"
+                f"Unified diff:\n{''.join(diff_parts)[-diff_limit:] or '(no file diff captured)'}\n\n"
+                f"Relevant current snippets:\n{''.join(snippets)[-snippet_limit:]}\n\n"
+                "Fix the failure with a minimal edit_file patch. Do not rewrite entire files."
+            )
+
+        cloud_available = self._cfg.gemini_available or self._cfg.nvidia_available
+        local_call_failed = provider_name == ProviderName.OLLAMA and bool(state["agent_errors"]) and not changed_files
+        test_failed = bool(test_results and not test_results.get("check_passed"))
+        if local_call_failed and cloud_available and not state["cloud_repair_attempted"]:
+            state["cloud_repair_attempted"] = True
+            state["escalation_count"] += 1
+            state["route"] = "local->cloud-fallback"
+            cloud_provider = ProviderName.NVIDIA if self._cfg.nvidia_available else ProviderName.GEMINI
+            yield {"type": "status", "message": "Local model call failed; continuing with a cloud provider..."}
+            async for event in self._run_claude_code_agent(
+                prompt=f"{prompt}\n\nLocal provider failure:\n{failure_prompt(None)}",
+                workspace_context="",
+                history=[],
+                provider=cloud_provider,
+                max_steps=max_steps,
+                _repair_depth=_repair_depth + 1,
+                _run_state=state,
+            ):
+                yield event
+            await persist_telemetry()
+            return
+
+        if test_failed and provider_name == ProviderName.OLLAMA and state["retry_count"] < 2:
+            state["retry_count"] += 1
+            yield {"type": "status", "message": f"Scoped check failed; local repair {state['retry_count']}/2..."}
+            async for event in self._run_claude_code_agent(
+                prompt=f"{prompt}\n\nVerification failure to repair:\n{failure_prompt(test_results, compact=True)}",
+                workspace_context="",
+                history=[],
+                provider=ProviderName.OLLAMA,
+                max_steps=8,
+                route_decision=route_decision,
+                _repair_depth=_repair_depth + 1,
+                _run_state=state,
+            ):
+                yield event
+            await persist_telemetry()
+            return
+
+        if test_failed and provider_name == ProviderName.OLLAMA and cloud_available and not state["cloud_repair_attempted"]:
+            state["cloud_repair_attempted"] = True
+            state["escalation_count"] += 1
+            state["route"] = "local->cloud-repair"
+            cloud_provider = ProviderName.NVIDIA if self._cfg.nvidia_available else ProviderName.GEMINI
+            yield {"type": "status", "message": "Local repair budget exhausted; escalating diff and failing check to a cloud expert..."}
+            async for event in self._run_claude_code_agent(
+                prompt=f"{prompt}\n\nCloud repair evidence:\n{failure_prompt(test_results)}",
+                workspace_context="",
+                history=[],
+                provider=cloud_provider,
+                max_steps=8,
+                _repair_depth=_repair_depth + 1,
+                _run_state=state,
+            ):
+                yield event
+            await persist_telemetry()
+            return
+
+        if test_failed:
+            yield {"type": "status", "message": "Scoped verification still fails after the bounded repair and escalation attempts."}
+
+        await persist_telemetry()
         yield {"type": "done", "provider": provider_name.value, "model": "mini-claude-code"}
+
+    @staticmethod
+    def _telemetry_check(result: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if not result:
+            return None
+        return {
+            "runner_used": result.get("runner_used", "unknown"),
+            "command": result.get("command", ""),
+            "check_passed": bool(result.get("check_passed", False)),
+            "skipped": bool(result.get("skipped", False)),
+            "passed": int(result.get("passed", 0) or 0),
+            "failed": int(result.get("failed", 0) or 0),
+        }
 
     async def _run_auto_workflow(
         self,
@@ -581,9 +824,22 @@ class CodingOrchestrator:
                     yield {"type": "text", "content": text_chunk, "model": self._cfg.ollama_model}
                 edits = self._local_coder.extract_file_edits("".join(accumulated))
                 if edits and self._workspace_root:
-                    applied = await self.apply_file_edits(edits)
-                    if applied:
-                        yield {"type": "edit", "files": applied}
+                    loop = SelfCorrectionLoop(
+                        config=self._cfg,
+                        local_coder=self._local_coder,
+                        expert=self._expert,
+                        workspace_root=self._workspace_root,
+                        apply_edits=self.apply_file_edits,
+                    )
+                    async for event in loop.run(
+                        task_id=str(uuid.uuid4()),
+                        task_description=prompt,
+                        context=workspace_context,
+                        edits=edits,
+                        route="local-snippet",
+                        route_reason="standalone code request routed to local Qwen",
+                    ):
+                        yield event
                 yield {"type": "done", "provider": "ollama", "model": self._cfg.ollama_model}
                 return
             except Exception as e:
@@ -592,17 +848,31 @@ class CodingOrchestrator:
                     yield chunk
                 return
 
-        # ── TASK: Claude Code autonomous tool loop!
-        # Runs tools directly (create_directory, create_file, write_file, edit_file, read_file, run_command)
-        async for chunk in self._run_claude_code_agent(
-            prompt=prompt,
-            workspace_context=workspace_context,
-            history=history,
-            provider=None,  # auto-selects best available
-        ):
-            yield chunk
-
-        yield {"type": "done", "provider": "auto", "model": "hybrid"}
+        # ── TASK: explicit scope routing. Keep targeted work local; send
+        # cross-module and architectural work through cloud planning first.
+        decision = classify_task_complexity(prompt)
+        cloud_available = self._cfg.gemini_available or self._cfg.nvidia_available
+        if decision.route == "cloud" and cloud_available:
+            yield {"type": "status", "message": f"Routing to cloud planning: {decision.reason}"}
+            expert = ProviderName.NVIDIA if self._cfg.nvidia_available else ProviderName.GEMINI
+            async for chunk in self._run_expert_local_workflow(
+                expert_provider=expert,
+                prompt=prompt,
+                workspace_context=workspace_context,
+                history=history,
+            ):
+                yield chunk
+        else:
+            reason = decision.reason if decision.route == "local" else "cloud provider unavailable; using local Qwen"
+            yield {"type": "status", "message": f"Routing to local Qwen: {reason}"}
+            async for chunk in self._run_claude_code_agent(
+                prompt=prompt,
+                workspace_context=workspace_context,
+                history=history,
+                provider=ProviderName.OLLAMA,
+                route_decision={"route": "local", "complexity": decision.complexity, "reason": reason},
+            ):
+                yield chunk
 
     # ------------------------------------------------------------------
     # Expert + Local Workflows
@@ -619,8 +889,12 @@ class CodingOrchestrator:
         convo = self._history_text(history)
         contextual_prompt = f"Conversation so far:\n{convo}\n\nCurrent request: {prompt}" if convo else prompt
         parent_task = TaskSpec(description=contextual_prompt, context=workspace_context)
+        plan_usage = None
         try:
-            subtasks, _ = await self._expert.plan_task(parent_task)
+            subtasks, plan_usage = await self._expert.plan_task(
+                parent_task,
+                preferred_provider=expert_provider,
+            )
         except Exception as e:
             logger.warning("Cloud planning failed (%s); continuing with a single local task", e)
             yield {"type": "status", "message": f"Cloud planning unavailable ({str(e)[:120]}); continuing locally..."}
@@ -637,19 +911,44 @@ class CodingOrchestrator:
 
         yield {"type": "status", "message": "Delegating implementation to local Qwen..."}
         all_edits: List[FileEdit] = []
+        usage_records: list[ModelUsage] = [plan_usage] if plan_usage else []
+        local_failures: list[str] = []
+        implementation_context = "\n\n".join(x for x in (convo, workspace_context) if x)
         for st in subtasks or [ImplementationTask(parent_task_id=parent_task.id, title="Implement", description=prompt)]:
-            res = await self._local_coder.implement_task(st, context="\n\n".join(x for x in (convo, workspace_context) if x))
+            res = await self._local_coder.implement_task(st, context=implementation_context)
+            if res.usage:
+                usage_records.append(res.usage)
+            if res.status.value != "completed":
+                local_failures.append(res.error or f"Local worker failed in {st.title}")
             if res.content:
-                yield {"type": "text", "content": f"\n#### {st.title}\n{res.content}\n", "model": self._cfg.ollama_model}
+                visible = re.sub(r"<hybridcoder_(?:patch|new_file)>.*?</hybridcoder_(?:patch|new_file)>", "", res.content, flags=re.DOTALL).strip()
+                if visible:
+                    yield {"type": "text", "content": f"\n#### {st.title}\n{visible}\n", "model": self._cfg.ollama_model}
             if res.file_edits:
                 all_edits.extend(res.file_edits)
 
-        if all_edits and self._workspace_root:
-            applied = await self.apply_file_edits(all_edits)
-            yield {"type": "edit", "files": applied}
-            _sk = self._skipped_status()
-            if _sk:
-                yield _sk
+        loop = SelfCorrectionLoop(
+            config=self._cfg,
+            local_coder=self._local_coder,
+            expert=self._expert,
+            workspace_root=self._workspace_root,
+            apply_edits=self.apply_file_edits,
+            preferred_provider=expert_provider,
+        )
+        async for event in loop.run(
+            task_id=parent_task.id,
+            task_description=contextual_prompt,
+            context=implementation_context,
+            edits=all_edits,
+            initial_usages=usage_records,
+            initial_failure="\n".join(local_failures) if local_failures else None,
+            route="cloud-plan/local-worker",
+            route_reason=f"{expert_provider.value} planned the multi-component task; Qwen implements it",
+        ):
+            yield event
+        _sk = self._skipped_status()
+        if _sk:
+            yield _sk
 
         yield {"type": "done", "provider": expert_provider.value, "model": "expert+local"}
 
@@ -659,37 +958,67 @@ class CodingOrchestrator:
         workspace_context: str,
         history: List[ConversationMessage],
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Triple model workflow: Gemini plans, Grok reviews plan, Local implements, both review."""
-        yield {"type": "status", "message": "Model 1/3 (Gemini): Designing architecture..."}
+        """Use the preferred available cloud expert for planning, then Qwen to implement."""
+        planning_provider = (
+            ProviderName.NVIDIA if self._cfg.nvidia_available
+            else ProviderName.GEMINI if self._cfg.gemini_available
+            else ProviderName.OLLAMA
+        )
+        yield {"type": "status", "message": f"Model 1/2 ({planning_provider.value.title()}): Designing architecture..."}
         convo = self._history_text(history)
         contextual_prompt = f"Conversation so far:\n{convo}\n\nCurrent request: {prompt}" if convo else prompt
         parent_task = TaskSpec(description=contextual_prompt, context=workspace_context)
+        plan_usage = None
         try:
-            subtasks, _ = await self._expert.plan_task(parent_task)
+            subtasks, plan_usage = await self._expert.plan_task(
+                parent_task,
+                preferred_provider=planning_provider,
+            )
         except Exception as e:
             logger.warning("Cloud planning failed (%s); continuing with a single local task", e)
             yield {"type": "status", "message": f"Cloud planning unavailable ({str(e)[:120]}); continuing locally..."}
             subtasks = []
 
-        yield {"type": "status", "message": "Model 2/3 (NVIDIA NIM): Reviewing architecture & edge cases..."}
-        nvidia_critique = ""
-        if self._cfg.nvidia_available:
-            try:
-                nvidia_res = await self._escalation.run(
-                    prompt=f"Task: {contextual_prompt}\nProposed Plan:\n" + "\n".join(f"- {st.title}" for st in subtasks) + "\nPlease provide architectural critique and potential risks.",
-                    hint_chain=[ProviderName.NVIDIA],
-                )
-                nvidia_critique = nvidia_res.text
-                yield {"type": "text", "content": f"### NVIDIA NIM Critique\n{nvidia_critique}\n\n---\n", "model": "nvidia"}
-            except Exception as e:
-                logger.debug("NVIDIA critique skipped: %s", e)
-
-        yield {"type": "status", "message": "Model 3/3 (Local Qwen): Implementing code..."}
+        plan_provider = planning_provider
+        if plan_usage and plan_usage.provider in (ProviderName.NVIDIA, ProviderName.GEMINI):
+            plan_provider = plan_usage.provider
+        usage_records: list[ModelUsage] = [plan_usage] if plan_usage else []
+        yield {"type": "status", "message": f"Plan ready from {plan_provider.value.title()}; handing it to local Qwen..."}
+        yield {"type": "status", "message": "Model 2/2 (Local Qwen): Implementing code..."}
+        all_edits: List[FileEdit] = []
+        local_failures: list[str] = []
+        implementation_context = "\n\n".join(x for x in (convo, workspace_context) if x)
         for st in subtasks or [ImplementationTask(parent_task_id=parent_task.id, title="Implement", description=prompt)]:
-            res = await self._local_coder.implement_task(st, context="\n\n".join(x for x in (convo, workspace_context) if x))
+            res = await self._local_coder.implement_task(st, context=implementation_context)
+            if res.usage:
+                usage_records.append(res.usage)
+            if res.status.value != "completed":
+                local_failures.append(res.error or f"Local worker failed in {st.title}")
             if res.content:
-                yield {"type": "text", "content": f"\n#### {st.title}\n{res.content}\n", "model": self._cfg.ollama_model}
-            if res.file_edits and self._workspace_root:
-                await self.apply_file_edits(res.file_edits)
+                visible = re.sub(r"<hybridcoder_(?:patch|new_file)>.*?</hybridcoder_(?:patch|new_file)>", "", res.content, flags=re.DOTALL).strip()
+                if visible:
+                    yield {"type": "text", "content": f"\n#### {st.title}\n{visible}\n", "model": self._cfg.ollama_model}
+            if res.file_edits:
+                all_edits.extend(res.file_edits)
 
-        yield {"type": "done", "provider": "all", "model": "tri-hybrid"}
+        loop = SelfCorrectionLoop(
+            config=self._cfg,
+            local_coder=self._local_coder,
+            expert=self._expert,
+            workspace_root=self._workspace_root,
+            apply_edits=self.apply_file_edits,
+            preferred_provider=plan_provider,
+        )
+        async for event in loop.run(
+            task_id=parent_task.id,
+            task_description=contextual_prompt,
+            context=implementation_context,
+            edits=all_edits,
+            initial_usages=usage_records,
+            initial_failure="\n".join(local_failures) if local_failures else None,
+            route="all-models/local-worker",
+            route_reason=f"{plan_provider.value} led planning; Qwen implements and the other cloud expert is fallback",
+        ):
+            yield event
+
+        yield {"type": "done", "provider": plan_provider.value, "model": f"{plan_provider.value}+local"}

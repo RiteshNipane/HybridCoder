@@ -73,11 +73,13 @@ export function useChat() {
   );
 
   const stopGeneration = useCallback(() => {
-    if (activeConversationId) {
-      api.stopGeneration(activeConversationId);
+    const sent = api.stopGeneration();
+    if (sent) {
+      updateAgentStatus({ phase: 'coding', label: 'Stopping…', currentTask: 'Stopping the active request…' });
+    } else {
+      updateAgentStatus({ phase: 'idle', label: 'Ready' });
     }
-    updateAgentStatus({ phase: 'idle', label: 'Ready' });
-  }, [activeConversationId, updateAgentStatus]);
+  }, [updateAgentStatus]);
 
   // Reflect streaming state from ws events
   const messages = activeConversation?.messages ?? [];

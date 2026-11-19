@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shlex
+import subprocess
 from pathlib import Path
 
 from backend.tools.terminal import run_command
@@ -62,7 +65,7 @@ async def detect_test_runner(workspace_root: str | Path) -> str:
     # Python
     if has(
         "pytest.ini", "pyproject.toml", "setup.cfg", "setup.py",
-        "conftest.py", "tox.ini",
+        "conftest.py", "tox.ini", "tests", "test", "backend/tests",
     ):
         return "pytest"
 
@@ -74,7 +77,7 @@ async def detect_test_runner(workspace_root: str | Path) -> str:
 # ---------------------------------------------------------------------------
 async def run_project_tests(
     workspace_root: str | Path,
-    test_path: str | None = None,
+    test_path: str | list[str] | None = None,
 ) -> dict:
     """
     Run tests for the project, returning structured results.
@@ -90,7 +93,7 @@ async def run_project_tests(
     runner = await detect_test_runner(root)
 
     runner_cmds: dict[str, str] = {
-        "pytest": "python -m pytest -v --tb=short --no-header",
+        "pytest": "python -m pytest -q --tb=long --no-header",
         "jest": "npx jest --colors --verbose",
         "vitest": "npx vitest run --reporter verbose",
         "flutter": "flutter test --reporter expanded",
@@ -111,13 +114,21 @@ async def run_project_tests(
 
     base_cmd = runner_cmds[runner]
     if test_path:
+        test_paths = [test_path] if isinstance(test_path, str) else test_path
+        # The paths are selected by the scoped verifier. Quote them as command
+        # arguments because run_command executes through the user's shell.
+        quoted_paths = (
+            subprocess.list2cmdline(test_paths)
+            if os.name == "nt"
+            else shlex.join(test_paths)
+        )
         # Append the test path where appropriate
         if runner in ("pytest",):
-            base_cmd += f" {test_path}"
+            base_cmd += f" {quoted_paths}"
         elif runner in ("jest", "vitest"):
-            base_cmd += f" {test_path}"
+            base_cmd += f" {quoted_paths}"
         elif runner == "go":
-            base_cmd = f"go test -v {test_path}"
+            base_cmd = f"go test -v {quoted_paths}"
 
     raw = await run_command(base_cmd, cwd=root, timeout=180)
 
@@ -144,20 +155,17 @@ def parse_test_results(output: str, runner: str) -> dict:
     errors: list[str] = []
 
     if runner == "pytest":
-        # e.g. "5 passed, 2 failed, 1 error in 3.14s"
-        summary_re = re.search(
-            r"(?:(\d+) passed)?[,\s]*(?:(\d+) failed)?[,\s]*(?:(\d+) error)?",
-            output,
-            re.IGNORECASE,
-        )
-        if summary_re:
-            passed = int(summary_re.group(1) or 0)
-            failed = int(summary_re.group(2) or 0)
-            err_count = int(summary_re.group(3) or 0)
-            if err_count:
-                # Collect ERRORS sections
-                for m in re.finditer(r"ERRORS?\s*\n(.+?)(?=\n={3,}|\Z)", output, re.DOTALL):
-                    errors.append(m.group(1).strip())
+        # pytest can print either "5 passed, 2 failed" or "2 failed, 5 passed".
+        passed_matches = list(re.finditer(r"(\d+)\s+passed\b", output, re.IGNORECASE))
+        failed_matches = list(re.finditer(r"(\d+)\s+failed\b", output, re.IGNORECASE))
+        error_matches = list(re.finditer(r"(\d+)\s+errors?\b", output, re.IGNORECASE))
+        if passed_matches:
+            passed = int(passed_matches[-1].group(1))
+        if failed_matches:
+            failed = int(failed_matches[-1].group(1))
+        if error_matches and int(error_matches[-1].group(1)):
+            for m in re.finditer(r"ERRORS?\s*\n(.+?)(?=\n={3,}|\Z)", output, re.DOTALL):
+                errors.append(m.group(1).strip())
         # Collect FAILED lines
         for m in re.finditer(r"^FAILED (.+)$", output, re.MULTILINE):
             errors.append(m.group(1).strip())

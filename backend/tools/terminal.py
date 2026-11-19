@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -46,44 +47,39 @@ def _normalize_windows_command(cmd: str) -> str:
     return cmd
 
 
-def _sync_subprocess_run(cmd_str: str, cwd: Path, timeout: int, capture: bool) -> dict:
-    cmd_to_run = _normalize_windows_command(cmd_str)
-    timed_out = False
-    try:
-        res = subprocess.run(
-            cmd_to_run,
-            cwd=str(cwd),
-            shell=True,
-            capture_output=capture,
-            text=True,
-            timeout=timeout,
-            env=os.environ,
-        )
-        stdout = sanitize_output(res.stdout or "")
-        stderr = sanitize_output(res.stderr or "")
-        rc = res.returncode
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        raw_out = exc.stdout or ""
-        raw_err = exc.stderr or ""
-        if isinstance(raw_out, bytes):
-            raw_out = raw_out.decode("utf-8", errors="replace")
-        if isinstance(raw_err, bytes):
-            raw_err = raw_err.decode("utf-8", errors="replace")
-        stdout = sanitize_output(raw_out)
-        stderr = sanitize_output(raw_err)
-        rc = -1
-    except Exception as e:
-        stdout = ""
-        stderr = str(e)
-        rc = -1
+async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Stop a launched command and its descendants when a task is cancelled."""
+    if process.returncode is not None:
+        return
 
-    return {
-        "returncode": rc,
-        "stdout": stdout,
-        "stderr": stderr,
-        "timed_out": timed_out,
-    }
+    try:
+        if _IS_WINDOWS:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(process.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5)
+            if killer.returncode != 0:
+                process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, asyncio.TimeoutError):
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except (OSError, asyncio.TimeoutError):
+        try:
+            process.kill()
+            await asyncio.wait_for(process.wait(), timeout=2)
+            return
+        except (OSError, asyncio.TimeoutError, ProcessLookupError):
+            pass
+        logger.warning("Could not confirm termination of command process %s", process.pid)
 
 
 class CommandBlockedError(RuntimeError):
@@ -133,7 +129,61 @@ async def run_command(
     if not cwd_path.exists():
         raise FileNotFoundError(f"Working directory does not exist: {cwd_path}")
 
-    result = await asyncio.to_thread(_sync_subprocess_run, cmd_str, cwd_path, timeout, capture)
+    cmd_to_run = _normalize_windows_command(cmd_str)
+    process_options: dict = {}
+    if _IS_WINDOWS:
+        process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_options["start_new_session"] = True
+
+    process: Optional[asyncio.subprocess.Process] = None
+    communicate_task: Optional[asyncio.Task] = None
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd_to_run,
+            cwd=str(cwd_path),
+            env=os.environ,
+            stdout=asyncio.subprocess.PIPE if capture else None,
+            stderr=asyncio.subprocess.PIPE if capture else None,
+            **process_options,
+        )
+        communicate_task = asyncio.create_task(process.communicate())
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                asyncio.shield(communicate_task), timeout=timeout
+            )
+            result = {
+                "returncode": process.returncode,
+                "stdout": sanitize_output((stdout or b"").decode("utf-8", errors="replace")),
+                "stderr": sanitize_output((stderr or b"").decode("utf-8", errors="replace")),
+                "timed_out": False,
+            }
+        except asyncio.TimeoutError:
+            await _terminate_process_tree(process)
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.shield(communicate_task), timeout=5
+                )
+            except asyncio.TimeoutError:
+                communicate_task.cancel()
+                stdout, stderr = b"", b""
+            result = {
+                "returncode": -1,
+                "stdout": sanitize_output((stdout or b"").decode("utf-8", errors="replace")),
+                "stderr": sanitize_output((stderr or b"").decode("utf-8", errors="replace")),
+                "timed_out": True,
+            }
+    except asyncio.CancelledError:
+        if process is not None:
+            await _terminate_process_tree(process)
+        if communicate_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(communicate_task), timeout=5)
+            except (asyncio.TimeoutError, OSError):
+                communicate_task.cancel()
+        raise
+    except Exception as exc:
+        result = {"returncode": -1, "stdout": "", "stderr": str(exc), "timed_out": False}
 
     if result.get("timed_out"):
         logger.warning("Command timed out after %ds: %s", timeout, cmd_str[:200])

@@ -53,7 +53,7 @@ class EscalationResult:
 class EscalationEngine:
     """
     Runs providers in a configurable chain.
-    Default escalation order: LOCAL → GEMINI → GROK.
+    Default escalation order: LOCAL → GEMINI → NVIDIA NIM.
 
     If a provider fails (exception, timeout, empty response), the engine
     moves to the next one after the configured retry attempts.

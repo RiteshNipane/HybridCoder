@@ -31,16 +31,21 @@ You are an expert software engineer and precision code generator.
 Your objective is to implement the requested task cleanly, idiomatically, and completely.
 
 CRITICAL INSTRUCTIONS:
-1. Always write complete, working code. Do NOT use placeholders like '# ... rest of code' or 'TODO'.
-2. When creating or modifying files, provide the exact code changes.
-3. If providing file modifications, clearly indicate file paths using the format:
-```filepath:relative/path/to/file.ext
-<complete file content or clear modification>
-```
-4. Follow existing conventions, style, and imports in the project.
-5. Provide a concise summary of changes and decisions at the end.
-6. File paths MUST be relative to the workspace root (e.g. `src/App.jsx`, `index.html`). NEVER use absolute paths, drive letters, `/tmp` or `C:\\tmp`.
-7. Do NOT create scratch, verification or test-marker files unless the user asked for them. Only write files that are part of the requested project.
+1. Keep edits minimal. For an existing file, emit one or more exact search/replace blocks; do not rewrite the whole file.
+2. Encode each existing-file patch as JSON inside these tags:
+<hybridcoder_patch>
+{"path":"relative/file.py","search":"exact existing text","replace":"replacement text"}
+</hybridcoder_patch>
+The search text must be specific and present exactly once. Escape JSON strings correctly.
+3. For a genuinely new file only, emit JSON inside these tags:
+<hybridcoder_new_file>
+{"path":"relative/new_file.py","content":"complete file content"}
+</hybridcoder_new_file>
+4. Do NOT use a patch block to create a file. Do NOT use a new-file block to overwrite an existing file.
+5. Follow existing conventions and imports. Do not add placeholders such as '# ... rest of code' or TODOs.
+6. Provide a concise summary after the patch blocks. Do not put unrelated full-file code fences in the response.
+7. File paths MUST be relative to the workspace root. NEVER use absolute paths, drive letters, `/tmp` or `C:\\tmp`.
+8. Do NOT create scratch, verification or test-marker files unless requested.
 """
 
 _SYSTEM_TASK_IMPLEMENTER = """\
@@ -56,13 +61,11 @@ Task Details:
 Context & Relevant Files:
 {context}
 
-Respond in the following format:
-1. Short summary of implementation strategy
-2. Code changes for each file using:
-```filepath:path/to/file.ext
-<complete code>
-```
-3. Verification steps / tests added
+Respond with a short strategy, then minimal exact patches for existing files using
+<hybridcoder_patch>{{"path":"relative/path","search":"exact text","replace":"new text"}}</hybridcoder_patch>
+For new files, use
+<hybridcoder_new_file>{{"path":"relative/path","content":"complete file content"}}</hybridcoder_new_file>
+Do not output complete replacements for existing files. The system runs scoped checks after applying changes.
 """
 
 
@@ -104,6 +107,42 @@ class LocalCoderAgent:
         """
         edits: list[FileEdit] = []
         seen_paths: set[str] = set()
+
+        # Preferred format: exact, structured search/replace patches. Multiple
+        # patches may target one file and are applied transactionally later.
+        structured_paths: set[str] = set()
+        for match in re.finditer(r"<hybridcoder_patch>\s*(.*?)\s*</hybridcoder_patch>", text, re.DOTALL):
+            try:
+                data = json.loads(match.group(1))
+                path = str(data.get("path", "")).strip().strip("\"'`")
+                search = data.get("search")
+                replacement = data.get("replace")
+                if path and isinstance(search, str) and search and isinstance(replacement, str):
+                    structured_paths.add(path)
+                    edits.append(FileEdit(
+                        path=path,
+                        original_content=search,
+                        new_content=replacement,
+                        description=f"Structured search/replace patch for {path}",
+                    ))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+
+        for match in re.finditer(r"<hybridcoder_new_file>\s*(.*?)\s*</hybridcoder_new_file>", text, re.DOTALL):
+            try:
+                data = json.loads(match.group(1))
+                path = str(data.get("path", "")).strip().strip("\"'`")
+                content = data.get("content")
+                if path and isinstance(content, str) and path not in structured_paths:
+                    structured_paths.add(path)
+                    edits.append(FileEdit(
+                        path=path,
+                        new_content=content,
+                        description=f"Structured new file for {path}",
+                    ))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        seen_paths.update(structured_paths)
 
         # 1. Tool call extraction (<tool_call> ... </tool_call>)
         tool_call_matches = re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL)

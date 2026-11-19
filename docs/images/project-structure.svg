@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="910" viewBox="0 0 1400 910" role="img" aria-labelledby="title desc">
+  <title id="title">HybridCoder repository structure</title>
+  <desc id="desc">A visual map of the HybridCoder backend, frontend, documentation, scripts, and root configuration files.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#edf4fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-12%" y="-12%" width="124%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#18324d" flood-opacity=".09"/>
+    </filter>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172b42; }
+      .title { font-size: 31px; font-weight: 750; letter-spacing: -.5px; }
+      .subtitle { font-size: 15px; fill: #52657a; }
+      .card { fill: #fff; stroke: #d7e2ee; stroke-width: 1.5; rx: 16; filter: url(#shadow); }
+      .section { font-size: 20px; font-weight: 730; }
+      .folder { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 14px; font-weight: 700; fill: #174ea6; }
+      .description { font-size: 13px; fill: #52657a; }
+      .small { font-size: 12px; fill: #64748b; }
+      .pill { fill: #edf4ff; stroke: #d5e4ff; stroke-width: 1; rx: 7; }
+      .divider { stroke: #e5edf5; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="910" rx="24" fill="url(#bg)"/>
+  <text x="48" y="58" class="title">HybridCoder repository structure</text>
+  <text x="48" y="88" class="subtitle">A map of the main folders and the responsibilities they contain.</text>
+
+  <rect x="48" y="120" width="640" height="590" class="card"/>
+  <rect x="48" y="120" width="640" height="8" rx="4" fill="#4f46e5"/>
+  <text x="76" y="166" class="section">backend/</text>
+  <text x="76" y="190" class="small">FastAPI application, orchestration, model routing, and workspace tools</text>
+  <line x1="76" y1="207" x2="660" y2="207" class="divider"/>
+
+  <rect x="76" y="226" width="112" height="27" class="pill"/><text x="87" y="244" class="folder">agents/</text>
+  <text x="205" y="244" class="description">Planning, implementation, review, and team context</text>
+  <rect x="76" y="266" width="112" height="27" class="pill"/><text x="87" y="284" class="folder">providers/</text>
+  <text x="205" y="284" class="description">Gemini, NVIDIA NIM, and Ollama integrations</text>
+  <rect x="76" y="306" width="112" height="27" class="pill"/><text x="87" y="324" class="folder">routing/</text>
+  <text x="205" y="324" class="description">Intent classification, model selection, and escalation</text>
+  <rect x="76" y="346" width="112" height="27" class="pill"/><text x="87" y="364" class="folder">scanner/</text>
+  <text x="205" y="364" class="description">Repository scanning and relevant context retrieval</text>
+  <rect x="76" y="386" width="112" height="27" class="pill"/><text x="87" y="404" class="folder">schemas/</text>
+  <text x="205" y="404" class="description">Conversation, task, and provider data models</text>
+  <rect x="76" y="426" width="112" height="27" class="pill"/><text x="87" y="444" class="folder">security/</text>
+  <text x="205" y="444" class="description">Workspace path boundary checks</text>
+  <rect x="76" y="466" width="112" height="27" class="pill"/><text x="87" y="484" class="folder">storage/</text>
+  <text x="205" y="484" class="description">SQLite model usage tracking</text>
+  <rect x="76" y="506" width="112" height="27" class="pill"/><text x="87" y="524" class="folder">tools/</text>
+  <text x="205" y="524" class="description">Filesystem, terminal, tests, and Git operations</text>
+
+  <line x1="76" y1="548" x2="660" y2="548" class="divider"/>
+  <text x="80" y="578" class="folder">main.py</text>
+  <text x="205" y="578" class="description">REST endpoints and streaming WebSocket API</text>
+  <text x="80" y="612" class="folder">orchestrator.py</text>
+  <text x="205" y="612" class="description">Conversation context and request workflows</text>
+  <text x="80" y="646" class="folder">config.py</text>
+  <text x="205" y="646" class="description">Application settings and model configuration</text>
+
+  <rect x="720" y="120" width="632" height="350" class="card"/>
+  <rect x="720" y="120" width="632" height="8" rx="4" fill="#0891b2"/>
+  <text x="748" y="166" class="section">frontend/</text>
+  <text x="748" y="190" class="small">React, TypeScript, Vite, and Zustand browser application</text>
+  <line x1="748" y1="207" x2="1324" y2="207" class="divider"/>
+
+  <rect x="748" y="226" width="174" height="27" class="pill"/><text x="759" y="244" class="folder">src/components/</text>
+  <text x="940" y="244" class="description">Chat, sidebar, settings, files, and terminal UI</text>
+  <rect x="748" y="266" width="174" height="27" class="pill"/><text x="759" y="284" class="folder">src/hooks/</text>
+  <text x="940" y="284" class="description">Chat, WebSocket, and active model behavior</text>
+  <rect x="748" y="306" width="174" height="27" class="pill"/><text x="759" y="324" class="folder">src/services/</text>
+  <text x="940" y="324" class="description">Backend API and WebSocket client</text>
+  <rect x="748" y="346" width="174" height="27" class="pill"/><text x="759" y="364" class="folder">src/store/</text>
+  <text x="940" y="364" class="description">Application and conversation state</text>
+  <rect x="748" y="386" width="174" height="27" class="pill"/><text x="759" y="404" class="folder">src/styles/</text>
+  <text x="940" y="404" class="description">Global interface styles</text>
+  <text x="748" y="446" class="folder">package.json</text>
+  <text x="940" y="446" class="description">Frontend dependencies and build scripts</text>
+
+  <rect x="720" y="500" width="300" height="196" class="card"/>
+  <rect x="720" y="500" width="300" height="8" rx="4" fill="#059669"/>
+  <text x="748" y="545" class="section">docs/</text>
+  <text x="748" y="579" class="folder">images/</text>
+  <text x="842" y="579" class="description">Architecture diagrams</text>
+  <text x="748" y="612" class="description">Setup, model, security, and API guides</text>
+  <text x="748" y="646" class="small">Troubleshooting and architecture notes are in docs/.</text>
+
+  <rect x="1040" y="500" width="312" height="196" class="card"/>
+  <rect x="1040" y="500" width="312" height="8" rx="4" fill="#d97706"/>
+  <text x="1068" y="545" class="section">scripts/</text>
+  <text x="1068" y="579" class="folder">start.ps1</text>
+  <text x="1170" y="579" class="description">Launch app</text>
+  <text x="1068" y="612" class="folder">stop.ps1</text>
+  <text x="1170" y="612" class="description">Stop app</text>
+  <text x="1068" y="645" class="folder">check_env.ps1</text>
+  <text x="1195" y="645" class="description">Check setup</text>
+
+  <rect x="720" y="726" width="632" height="130" class="card"/>
+  <text x="748" y="770" class="section">Root configuration and guides</text>
+  <text x="748" y="805" class="folder">.env.example</text>
+  <text x="870" y="805" class="description">Configuration template</text>
+  <text x="1060" y="805" class="folder">requirements.txt</text>
+  <text x="1210" y="805" class="description">Python packages</text>
+  <text x="748" y="835" class="folder">README.md</text>
+  <text x="870" y="835" class="description">Project overview and setup</text>
+  <text x="1060" y="835" class="folder">INSTALL.md</text>
+  <text x="1170" y="835" class="description">Installation guide</text>
+</svg>

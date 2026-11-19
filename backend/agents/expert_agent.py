@@ -1,6 +1,6 @@
 """
 backend/agents/expert_agent.py
-Expert agent using Gemini or Grok to plan, decompose, and review tasks.
+Expert agent using Gemini and NVIDIA NIM as peer models to plan, decompose, answer, and review tasks.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ When writing code, always write complete, working implementations.
 
 class ExpertAgent:
     """
-    Uses cloud models (Gemini first, NVIDIA as backup) for high-level reasoning:
+    Uses Gemini and NVIDIA NIM as peer cloud experts for high-level reasoning:
     - Task planning and decomposition
     - Code review
     - Architecture decisions
@@ -97,6 +97,15 @@ class ExpertAgent:
         self._router = ModelRouter(self._cfg)
         self._escalation = EscalationEngine(self._cfg, self._router)
 
+    @staticmethod
+    def _expert_chain(preferred_provider: Optional[ProviderName] = None) -> list[ProviderName]:
+        """Put the selected expert first; AUTO defaults to NVIDIA during Gemini capacity issues."""
+        if preferred_provider in (ProviderName.NVIDIA, ProviderName.GROK):
+            return [ProviderName.NVIDIA, ProviderName.GEMINI]
+        if preferred_provider == ProviderName.GEMINI:
+            return [ProviderName.GEMINI, ProviderName.NVIDIA]
+        return [ProviderName.NVIDIA, ProviderName.GEMINI]
+
     # ------------------------------------------------------------------
     # Task planning
     # ------------------------------------------------------------------
@@ -105,6 +114,7 @@ class ExpertAgent:
         self,
         task: TaskSpec,
         conversation_id: Optional[str] = None,
+        preferred_provider: Optional[ProviderName] = None,
     ) -> tuple[list[ImplementationTask], Any]:
         """Decompose a high-level task into ordered implementation sub-tasks.
 
@@ -127,7 +137,7 @@ class ExpertAgent:
                 prompt=prompt,
                 system_prompt=_SYSTEM_PLAN,
                 task=task,
-                chain=[ProviderName.GEMINI, ProviderName.NVIDIA, ProviderName.OLLAMA],
+                chain=[*self._expert_chain(preferred_provider), ProviderName.OLLAMA],
                 temperature=0.1,
             )
             await self._tracker.record(
@@ -199,6 +209,7 @@ class ExpertAgent:
         task_description: Optional[str] = None,
         task_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        preferred_provider: Optional[ProviderName] = None,
     ) -> dict[str, Any]:
         """Review code and return structured feedback."""
         task_ctx = f"\nTask context: {task_description}" if task_description else ""
@@ -213,7 +224,7 @@ class ExpertAgent:
             result = await self._escalation.run(
                 prompt=prompt,
                 system_prompt=_SYSTEM_REVIEW,
-                chain=[ProviderName.GEMINI, ProviderName.NVIDIA],
+                chain=self._expert_chain(preferred_provider),
                 temperature=0.0,
             )
             await self._tracker.record(
@@ -239,6 +250,7 @@ class ExpertAgent:
         task: Optional[TaskSpec] = None,
         task_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        preferred_provider: Optional[ProviderName] = None,
     ) -> tuple[str, ModelUsage]:
         """Single-shot expert response."""
         full_prompt = self._build_conversation_prompt(prompt, conversation_history)
@@ -246,7 +258,7 @@ class ExpertAgent:
             prompt=full_prompt,
             system_prompt=system_prompt or _SYSTEM_GENERAL,
             task=task,
-            chain=[ProviderName.GEMINI, ProviderName.NVIDIA],
+            chain=self._expert_chain(preferred_provider),
         )
         await self._tracker.record(
             result.usage, task_id=task_id, conversation_id=conversation_id
@@ -260,6 +272,7 @@ class ExpertAgent:
         conversation_history: Optional[list[ConversationMessage]] = None,
         task_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        preferred_provider: Optional[ProviderName] = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming expert response."""
         full_prompt = self._build_conversation_prompt(prompt, conversation_history)
@@ -269,7 +282,7 @@ class ExpertAgent:
         async for chunk, prov, is_done in self._escalation.stream(
             prompt=full_prompt,
             system_prompt=system_prompt or _SYSTEM_GENERAL,
-            chain=[ProviderName.GEMINI, ProviderName.NVIDIA],
+            chain=self._expert_chain(preferred_provider),
         ):
             if not is_done and chunk:
                 total_text += chunk

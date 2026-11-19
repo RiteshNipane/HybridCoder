@@ -36,6 +36,7 @@ class WebSocketManager {
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30_000;
   private shouldReconnect = true;
+  private activeGenerationConversationId: string | null = null;
   public connected = false;
   private connectionListeners: Set<(connected: boolean) => void> = new Set();
 
@@ -76,6 +77,7 @@ class WebSocketManager {
 
     this.ws.onclose = () => {
       this.connected = false;
+      this.activeGenerationConversationId = null;
       this._notifyListeners(false);
       if (this.shouldReconnect) {
         this._scheduleReconnect();
@@ -104,6 +106,7 @@ class WebSocketManager {
     }
     this.ws = null;
     this.connected = false;
+    this.activeGenerationConversationId = null;
     this._notifyListeners(false);
   }
 
@@ -114,6 +117,23 @@ class WebSocketManager {
       return true;
     }
     return false;
+  }
+
+  setActiveGeneration(conversationId: string) {
+    this.activeGenerationConversationId = conversationId;
+  }
+
+  stopActiveGeneration(): boolean {
+    const conversationId = this.activeGenerationConversationId;
+    return conversationId
+      ? this.send({ type: 'stop', conversationId })
+      : false;
+  }
+
+  finishGeneration(conversationId: string) {
+    if (this.activeGenerationConversationId === conversationId) {
+      this.activeGenerationConversationId = null;
+    }
   }
 
   onConnectionChange(listener: (connected: boolean) => void) {
@@ -181,6 +201,7 @@ export const api = {
       type: 'send_message',
       ...params,
     });
+    if (sent) wsManager.setActiveGeneration(params.conversationId);
     if (!sent) {
       // Don't leave the UI stuck on "Planning…" if the backend socket is down
       streamEvents.emit({
@@ -191,8 +212,12 @@ export const api = {
     }
   },
 
-  stopGeneration(conversationId: string): void {
-    wsManager.send({ type: 'stop', conversationId });
+  stopGeneration(): boolean {
+    return wsManager.stopActiveGeneration();
+  },
+
+  finishGeneration(conversationId: string): void {
+    wsManager.finishGeneration(conversationId);
   },
 
   // Workspace

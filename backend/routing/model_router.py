@@ -148,10 +148,10 @@ class ModelRouter:
 
         if mode == RoutingMode.ALL:
             primary = []
-            if self._cfg.gemini_available:
-                primary.append(ProviderName.GEMINI)
             if self._cfg.nvidia_available:
                 primary.append(ProviderName.NVIDIA)
+            if self._cfg.gemini_available:
+                primary.append(ProviderName.GEMINI)
             primary.append(ProviderName.OLLAMA)
             return RouteResult(
                 primary=primary[:1],
@@ -174,27 +174,27 @@ class ModelRouter:
         )
 
         if is_complex:
-            # Complex: NVIDIA preferred, then Gemini, then local
+            # Complex AUTO tasks prefer NVIDIA, then Gemini, then local.
             primary = []
-            if self._cfg.gemini_available:
-                primary.append(ProviderName.GEMINI)
             if self._cfg.nvidia_available:
                 primary.append(ProviderName.NVIDIA)
+            if self._cfg.gemini_available:
+                primary.append(ProviderName.GEMINI)
             primary.append(ProviderName.OLLAMA)
             return RouteResult(
                 primary=primary[:1],
                 fallback=primary[1:] if self._cfg.escalation_enabled else [],
                 mode=RoutingMode.AUTO,
-                reason="Complex task -> Gemini first, NVIDIA backup",
+                reason="Complex task -> NVIDIA first, Gemini peer fallback",
             )
 
         # Standard / routine task: Local first, fallback to cloud
         fallback = []
         if self._cfg.escalation_enabled:
-            if self._cfg.gemini_available:
-                fallback.append(ProviderName.GEMINI)
             if self._cfg.nvidia_available:
                 fallback.append(ProviderName.NVIDIA)
+            if self._cfg.gemini_available:
+                fallback.append(ProviderName.GEMINI)
 
         return RouteResult(
             primary=[ProviderName.OLLAMA],

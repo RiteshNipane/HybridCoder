@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { wsManager, streamEvents } from '@/services/api';
+import { api, wsManager, streamEvents } from '@/services/api';
 import { useStore } from '@/store';
 import { nanoid } from './nanoid';
 import type { ToolExecution } from '@/types';
@@ -133,7 +133,7 @@ export function useWebSocket() {
       // 3. File modifications
       else if (type === 'edit' || type === 'file_change') {
         const files: string[] = event.files || event.payload || [];
-        const action = event.action === 'create' ? 'create' : 'edit';
+        const action = event.action === 'create' ? 'create' : event.action === 'delete' ? 'delete' : 'edit';
         updateLastMessage(convId, {
           fileChanges: files.map((f: string) => ({ path: f, action })),
         });
@@ -142,7 +142,9 @@ export function useWebSocket() {
       // 4. Test run results
       else if (type === 'test') {
         const results = event.results || {};
-        const passSummary = `\n\n**Test Results**: ${results.passed || 0} passed, ${results.failed || 0} failed (${results.runner_used || 'auto'})`;
+        const passSummary = results.skipped
+          ? `\n\n**Verification Skipped**: ${results.output || 'No matching test or compiler check was available.'}`
+          : `\n\n**Verification Results**: ${results.passed || 0} passed, ${results.failed || 0} failed (${results.runner_used || 'auto'})`;
         appendToLastMessage(convId, passSummary);
       }
 
@@ -150,6 +152,7 @@ export function useWebSocket() {
       else if (type === 'done') {
         const model = event.model || 'hybrid';
         streamingRef.current.delete(convId);
+        api.finishGeneration(convId);
         updateLastMessage(convId, {
           streaming: false,
           model,
@@ -161,6 +164,7 @@ export function useWebSocket() {
       else if (type === 'error') {
         const errorMsg = event.error || event.message || 'Unknown error';
         streamingRef.current.delete(convId);
+        api.finishGeneration(convId);
         updateAgentStatus({ phase: 'error', label: 'Error' });
 
         // The backend sends each error twice (with and without conversationId): show it once.
@@ -177,6 +181,19 @@ export function useWebSocket() {
           model: 'system',
           timestamp: now,
         });
+      }
+
+      // 7. Explicit stop acknowledgment
+      else if (type === 'cancelled') {
+        streamingRef.current.delete(convId);
+        api.finishGeneration(convId);
+        updateLastMessage(convId, { streaming: false });
+        updateAgentStatus({ phase: 'idle', label: event.was_running ? 'Stopped' : 'Ready' });
+      }
+
+      // 8. Another request arrived while the active one was still running.
+      else if (type === 'busy') {
+        updateAgentStatus({ phase: 'coding', label: event.message || 'A request is already running.' });
       }
     });
 

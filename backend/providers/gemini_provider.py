@@ -79,8 +79,8 @@ class GeminiProvider(BaseProvider):
             api_key=self._cfg.gemini_api_key,
             http_options=genai.types.HttpOptions(timeout=self._cfg.gemini_timeout * 1000),
         )
-        # The SDK call runs in a worker thread, which asyncio cannot stop when
-        # wait_for expires. Its HTTP client owns the real request timeout.
+        # Use the SDK's async client so task cancellation also aborts the HTTP request.
+        self._async_client = self._client.aio
         self._wait_timeout = self._cfg.gemini_timeout + 10
         self._model = self._cfg.gemini_model
         logger.info("GeminiProvider initialised (model=%s)", self._model)
@@ -117,6 +117,10 @@ class GeminiProvider(BaseProvider):
             latency_ms=latency_ms,
         )
 
+    async def aclose(self) -> None:
+        """Close the asynchronous HTTP client owned by this provider instance."""
+        await self._async_client.aclose()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -141,8 +145,7 @@ class GeminiProvider(BaseProvider):
             attempt += 1
             try:
                 response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._client.models.generate_content,
+                    self._async_client.models.generate_content(
                         model=model,
                         contents=full_input,
                         config=genai.types.GenerateContentConfig(
@@ -188,9 +191,9 @@ class GeminiProvider(BaseProvider):
         model = model or self._model
         full_input = self._build_input(prompt, system_prompt)
 
-        def _run_stream() -> list[str]:
+        async def _run_stream() -> list[str]:
             chunks: list[str] = []
-            response = self._client.models.generate_content_stream(
+            response = await self._async_client.models.generate_content_stream(
                 model=model,
                 contents=full_input,
                 config=genai.types.GenerateContentConfig(
@@ -198,7 +201,7 @@ class GeminiProvider(BaseProvider):
                     temperature=temperature,
                 ),
             )
-            for chunk in response:
+            async for chunk in response:
                 if chunk.text:
                     chunks.append(chunk.text)
             return chunks
@@ -209,7 +212,7 @@ class GeminiProvider(BaseProvider):
             attempt += 1
             try:
                 chunks = await asyncio.wait_for(
-                    asyncio.to_thread(_run_stream),
+                    _run_stream(),
                     timeout=self._wait_timeout,
                 )
                 for chunk in chunks:

@@ -28,14 +28,14 @@ def team_context(config: Config, current_provider: Optional[ProviderName] = None
         )
     return f"""HYBRIDCODER MODEL TEAM
 {current}
-The orchestrator routes each request and passes explicit context between separate model calls. Models do not share hidden state or private reasoning with each other.
+The orchestrator routes each request and passes explicit context between separate model calls. Models do not share hidden state or private reasoning with each other. Gemini and NVIDIA NIM are peer cloud experts with the same general capabilities. AUTO currently prefers NVIDIA NIM because Gemini is returning temporary high-demand 503 errors; Gemini remains the fallback and is still used when explicitly selected.
 
-- Gemini ({config.gemini_model}): primary cloud expert. It handles direct answers, ambiguous intent tie-breaks, architecture and task planning, and can lead tool-using work when selected.
-- NVIDIA NIM ({config.nvidia_model}): secondary cloud expert and reviewer. It critiques plans/changes and acts as a fallback when Gemini is unavailable or times out.
+- Gemini ({config.gemini_model}): cloud expert for direct answers, ambiguous intent tie-breaks, architecture and task planning, code review, and cloud-led workflows.
+- NVIDIA NIM ({config.nvidia_model}): peer cloud expert with the same capabilities: direct answers, ambiguous intent tie-breaks, architecture and task planning, code review, implementation reasoning, and cloud-led workflows. It can lead when selected and can provide an independent second opinion or fallback for Gemini.
 - Local Ollama ({config.ollama_model}, Qwen coder): local implementation worker. It writes code and file changes from the task, plan, workspace context, and tool results passed to it; it can also run as the offline/local route.
 - Python orchestrator and rule-based intent classifier: select the workflow, retrieve relevant workspace context, and pass conversation history, plans, review notes, or tool outputs to the next model when relevant. The classifier is not a separate LLM.
 
-In the ALL engineering workflow, Gemini plans, NVIDIA reviews the plan, and local Qwen implements it. In AUTO, the orchestrator selects a lightweight answer or an engineering workflow based on intent. In other modes, roles follow the selected provider and fallback chain. Do not claim you are unaware of these configured teammates. Describe only the work actually handed to you; do not claim another model ran unless the orchestrator's supplied context says it did."""
+In NVIDIA+LOCAL mode, NVIDIA leads planning and local Qwen implements the task. In GEMINI+LOCAL mode, Gemini leads planning and Qwen implements it. AUTO and ALL currently prefer NVIDIA for cloud planning and direct answers; Gemini is tried if NVIDIA is unavailable or fails. Explicit Gemini mode still puts Gemini first. In AUTO, the orchestrator selects a lightweight answer or an engineering workflow based on intent. Do not claim you are unaware of these configured teammates. Describe only the work actually handed to you; do not claim another model ran unless the orchestrator's supplied context says it did."""
 
 
 def add_team_context(system_prompt: Optional[str], config: Config, provider: ProviderName) -> str:

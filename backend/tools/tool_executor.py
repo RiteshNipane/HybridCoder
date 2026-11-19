@@ -41,6 +41,7 @@ from backend.tools.filesystem import (
     write_file,
 )
 from backend.tools.terminal import CommandBlockedError, CommandRequiresApprovalError, run_command
+from backend.tools.verification import validate_source_text_async
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ You have access to the following tools. Use them whenever you need to read, crea
   </tool>
 
   <tool name="write_file">
-    <description>Write (create or overwrite) a file with new content. Creates parent directories automatically.</description>
+    <description>Create a genuinely new file with complete content. For existing files use edit_file with the smallest exact section that should change.</description>
     <args>
       <arg name="path" type="string" required="true">Path to the file to write.</arg>
       <arg name="content" type="string" required="true">Full content to write to the file.</arg>
@@ -75,7 +76,7 @@ You have access to the following tools. Use them whenever you need to read, crea
   </tool>
 
   <tool name="create_file">
-    <description>Create a NEW file. Fails if the file already exists (use write_file to overwrite).</description>
+    <description>Create a NEW file only. Fails if the file already exists.</description>
     <args>
       <arg name="path" type="string" required="true">Path to the new file.</arg>
       <arg name="content" type="string" required="true">Content for the new file.</arg>
@@ -90,7 +91,7 @@ You have access to the following tools. Use them whenever you need to read, crea
   </tool>
 
   <tool name="edit_file">
-    <description>Replace an exact substring inside a file. IMPORTANT: old_content must match exactly (including whitespace and line endings).</description>
+    <description>Make a minimal patch to an existing file by replacing one exact, unique section. Prefer this over rewriting a whole file. old_content must match exactly.</description>
     <args>
       <arg name="path" type="string" required="true">Path to the file.</arg>
       <arg name="old_content" type="string" required="true">Exact substring to find and replace.</arg>
@@ -158,14 +159,15 @@ ENVIRONMENT & OPERATING SYSTEM:
 - When running commands via run_command, avoid Unix-specific utilities (no 'tail', no 'head', no '/dev/null', no 'which'). Use Windows equivalents if needed ('where' instead of 'which', 'NUL' instead of '/dev/null').
 
 IMPORTANT RULES:
-1. When asked to create a folder, use create_directory immediately. For files, use create_file or write_file.
-2. When asked to edit a file, first read_file it, then use edit_file or write_file.
+1. When asked to create a folder, use create_directory immediately. Use create_file or write_file only for genuinely new files.
+2. When asked to edit an existing file, first read_file it, then use edit_file with a small, exact, unique search section. Do not overwrite whole files to make a local change.
 3. When asked to run something, use run_command.
 4. Always confirm what you did by showing the file path and a brief summary.
 5. Never produce fake file contents in markdown without actually writing the file.
 6. After writing files, check with list_directory or read_file to verify success.
 7. Keep responses concise. Show tool calls and their results, then summarize.
 8. File operations are restricted to the active workspace. If the requested location is outside it, ask the user to select that location as the workspace; never create a similarly named folder in a different location.
+9. The orchestrator runs scoped tests or compiler checks after edits and feeds failures back for a bounded repair pass. Do not run a guessed full test suite yourself unless the user explicitly asks.
 
 {workspace_info}
 {tool_definitions}
@@ -250,6 +252,7 @@ class ToolExecutor:
     ) -> None:
         self.workspace_root = workspace_root
         self._approval_cb = require_approval_callback
+        self.last_change: Optional[Dict[str, Optional[str]]] = None
 
     def _root(self, path_arg: Optional[str] = None) -> Path:
         """Resolve a path relative to workspace_root."""
@@ -269,6 +272,7 @@ class ToolExecutor:
         Returns:
             (result_text, is_error)
         """
+        self.last_change = None
         try:
             if name == "read_file":
                 path = self._root(args.get("path"))
@@ -280,20 +284,22 @@ class ToolExecutor:
                 path = self._root(args.get("path"))
                 content = args.get("content", "")
                 ws = self.workspace_root or path.parent
+                before = await read_file(path, ws) if path.exists() else None
+                if before is not None:
+                    raise ValueError("write_file will not replace an existing file; use edit_file with a minimal exact search block")
+                await validate_source_text_async(path, content, ws)
                 result = await write_file(path, content, ws)
+                self.last_change = {"path": str(Path(result["path"]).relative_to(ws.resolve())).replace("\\", "/"), "before": before, "after": content}
                 return f"✅ Written: {result['path']} ({result['bytes_written']} bytes)", False
 
             elif name == "create_file":
                 path = self._root(args.get("path"))
                 content = args.get("content", "")
                 ws = self.workspace_root or path.parent
-                try:
-                    result = await create_file(path, content, ws)
-                    return f"✅ Created: {result['path']} ({result['bytes_written']} bytes)", False
-                except FileExistsError:
-                    # Fall back to overwrite
-                    result = await write_file(path, content, ws)
-                    return f"✅ Overwritten (file existed): {result['path']} ({result['bytes_written']} bytes)", False
+                await validate_source_text_async(path, content, ws)
+                result = await create_file(path, content, ws)
+                self.last_change = {"path": str(Path(result["path"]).relative_to(ws.resolve())).replace("\\", "/"), "before": None, "after": content}
+                return f"✅ Created: {result['path']} ({result['bytes_written']} bytes)", False
 
             elif name == "create_directory":
                 path = self._root(args.get("path"))
@@ -306,13 +312,22 @@ class ToolExecutor:
                 old = args.get("old_content", "")
                 new = args.get("new_content", "")
                 ws = self.workspace_root or path.parent
+                before = await read_file(path, ws)
+                matches = before.count(old) if old else 0
+                if matches != 1:
+                    raise ValueError(f"edit_file requires an exact search block that occurs once; found {matches} matches in {path}")
+                after = before.replace(old, new, 1)
+                await validate_source_text_async(path, after, ws)
                 result = await edit_file(path, old, new, ws)
+                self.last_change = {"path": str(Path(result["path"]).relative_to(ws.resolve())).replace("\\", "/"), "before": before, "after": after}
                 return f"✅ Edited: {result['path']} ({result['original_length']} → {result['new_length']} chars)", False
 
             elif name == "delete_file":
                 path = self._root(args.get("path"))
                 ws = self.workspace_root or path.parent
+                before = await read_file(path, ws)
                 result = await delete_file(path, ws, require_approval=False)
+                self.last_change = {"path": str(Path(result["deleted"]).relative_to(ws.resolve())).replace("\\", "/"), "before": before, "after": None}
                 return f"✅ Deleted: {result['deleted']}", False
 
             elif name == "list_directory":
@@ -484,7 +499,12 @@ async def run_agentic_loop(
 
             output, is_error = await executor.execute(tool_name, tool_args)
 
-            yield {"type": "tool_result", "name": tool_name, "output": output, "error": is_error}
+            result_event = {"type": "tool_result", "name": tool_name, "output": output, "error": is_error}
+            if not is_error and executor.last_change:
+                # Kept internal by the orchestrator; it must not be sent to the browser
+                # because the snapshot can contain complete source files.
+                result_event["change"] = executor.last_change
+            yield result_event
             if on_tool_result:
                 on_tool_result(tool_name, output, is_error)
 

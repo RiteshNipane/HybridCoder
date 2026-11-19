@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">HybridCoder implementation verification loop</title>
+  <desc id="desc">Complexity routing selects local Qwen or cloud planning. Changes use scoped patches, syntax pre-checks, transactional writes, and scoped verification. Failed checks receive up to two local repairs before a cloud expert receives the diff and failure output.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#edf4fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-12%" y="-12%" width="124%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#18324d" flood-opacity=".09"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#059669"/></marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#dc2626"/></marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172b42; }
+      .title { font-size: 30px; font-weight: 750; letter-spacing: -.5px; }
+      .subtitle { font-size: 14px; fill: #52657a; }
+      .card { fill: #fff; stroke: #d7e2ee; stroke-width: 1.5; rx: 16; filter: url(#shadow); }
+      .head { font-size: 16px; font-weight: 720; }
+      .body { font-size: 12px; fill: #52657a; }
+      .small { font-size: 11px; fill: #64748b; }
+      .label { font-size: 10px; font-weight: 700; letter-spacing: .8px; fill: #64748b; }
+      .line { fill: none; stroke: #64748b; stroke-width: 2.2; marker-end: url(#arrow); }
+      .line-green { fill: none; stroke: #059669; stroke-width: 2.4; marker-end: url(#arrow-green); }
+      .line-red { fill: none; stroke: #dc2626; stroke-width: 2.4; marker-end: url(#arrow-red); }
+      .decision { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.6; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" rx="24" fill="url(#bg)"/>
+  <text x="48" y="58" class="title">Implementation and verification loop</text>
+  <text x="48" y="85" class="subtitle">Targeted work stays local; broad work gets an expert plan. Every patch is checked before and after it is written.</text>
+
+  <rect x="36" y="128" width="244" height="150" class="card"/>
+  <rect x="36" y="128" width="244" height="7" rx="4" fill="#4f46e5"/>
+  <text x="58" y="165" class="label">1 · ROUTE</text>
+  <text x="58" y="194" class="head">Complexity rules</text>
+  <text x="58" y="222" class="body">Small, localized edit:</text>
+  <text x="58" y="242" class="body">local Qwen first</text>
+  <text x="58" y="262" class="body">Cross-module work: cloud plan</text>
+
+  <rect x="316" y="128" width="244" height="150" class="card"/>
+  <rect x="316" y="128" width="244" height="7" rx="4" fill="#059669"/>
+  <text x="338" y="165" class="label">2 · WORKER</text>
+  <text x="338" y="194" class="head">Local Qwen</text>
+  <text x="338" y="222" class="body">Existing files use exact</text>
+  <text x="338" y="242" class="body">search/replace patches.</text>
+  <text x="338" y="262" class="body">New files use structured content.</text>
+
+  <rect x="596" y="128" width="244" height="150" class="card"/>
+  <rect x="596" y="128" width="244" height="7" rx="4" fill="#d97706"/>
+  <text x="618" y="165" class="label">3 · PRE-CHECK</text>
+  <text x="618" y="194" class="head">Parse before writing</text>
+  <text x="618" y="222" class="body">Python AST; TypeScript</text>
+  <text x="618" y="242" class="body">parser when installed; JSON,</text>
+  <text x="618" y="262" class="body">TOML, and XML parsers.</text>
+
+  <rect x="876" y="128" width="244" height="150" class="card"/>
+  <rect x="876" y="128" width="244" height="7" rx="4" fill="#0891b2"/>
+  <text x="898" y="165" class="label">4 · APPLY</text>
+  <text x="898" y="194" class="head">Workspace transaction</text>
+  <text x="898" y="222" class="body">Validate path and patch match.</text>
+  <text x="898" y="242" class="body">Reject ambiguous edits; restore</text>
+  <text x="898" y="262" class="body">original files if a write fails.</text>
+
+  <rect x="1156" y="128" width="208" height="150" class="card"/>
+  <rect x="1156" y="128" width="208" height="7" rx="4" fill="#2563eb"/>
+  <text x="1178" y="165" class="label">5 · VERIFY</text>
+  <text x="1178" y="194" class="head">Scoped checks</text>
+  <text x="1178" y="222" class="body">Related tests or</text>
+  <text x="1178" y="242" class="body">frontend build.</text>
+  <text x="1178" y="262" class="body">Keep traceback lines.</text>
+
+  <path d="M280 203 H308" class="line"/>
+  <path d="M560 203 H588" class="line"/>
+  <path d="M840 203 H868" class="line"/>
+  <path d="M1120 203 H1148" class="line"/>
+
+  <path d="M1260 278 V337" class="line"/>
+  <polygon points="1260,337 1330,382 1260,427 1190,382" class="decision"/>
+  <text x="1230" y="378" class="head">Pass?</text>
+  <text x="1213" y="397" class="body">check result</text>
+
+  <rect x="864" y="475" width="264" height="126" class="card"/>
+  <rect x="864" y="475" width="264" height="7" rx="4" fill="#059669"/>
+  <text x="886" y="512" class="label">PASS</text>
+  <text x="886" y="541" class="head">Return result</text>
+  <text x="886" y="568" class="body">Append route, duration, tokens,</text>
+  <text x="886" y="588" class="body">escalations, and check status to JSONL.</text>
+
+  <rect x="536" y="475" width="264" height="126" class="card"/>
+  <rect x="536" y="475" width="264" height="7" rx="4" fill="#d97706"/>
+  <text x="558" y="512" class="label">FAIL · LOCAL RETRY</text>
+  <text x="558" y="541" class="head">Qwen repair, up to 2</text>
+  <text x="558" y="568" class="body">Receives the exact failure,</text>
+  <text x="558" y="588" class="body">diff, and relevant current code.</text>
+
+  <rect x="208" y="475" width="264" height="126" class="card"/>
+  <rect x="208" y="475" width="264" height="7" rx="4" fill="#dc2626"/>
+  <text x="230" y="512" class="label">RETRIES EXHAUSTED</text>
+  <text x="230" y="541" class="head">Cloud expert repair</text>
+  <text x="230" y="568" class="body">Receives the unified diff,</text>
+  <text x="230" y="588" class="body">traceback, and file snippets.</text>
+
+  <path d="M1190 382 C1170 430 1110 450 1080 468" class="line-green"/>
+  <text x="1126" y="443" class="small">yes</text>
+  <path d="M1190 382 C1100 420 890 435 800 490" class="line-red"/>
+  <text x="1002" y="429" class="small">no</text>
+  <path d="M536 538 H480" class="line-red"/>
+  <text x="491" y="524" class="small">still fails</text>
+  <path d="M668 475 V330 H718 V286" class="line"/>
+  <text x="674" y="319" class="small">retry through pre-check</text>
+  <path d="M340 475 V422 H718 V286" class="line"/>
+  <text x="370" y="410" class="small">cloud patch returns to pre-check</text>
+
+  <rect x="36" y="648" width="1328" height="70" rx="12" fill="#eaf1f8" stroke="#d7e2ee"/>
+  <text x="58" y="678" class="head">Provider fallback</text>
+  <text x="220" y="678" class="body">Cloud calls try the other configured cloud provider, then local Qwen. Local-only mode stays local; failed checks are reported with their output.</text>
+  <text x="58" y="702" class="small">Telemetry is local at logs/task_runs.jsonl and is excluded from Git. No benchmark numbers are published until real task runs are collected.</text>
+</svg>

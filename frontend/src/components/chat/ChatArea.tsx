@@ -154,7 +154,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ onSendMessage, onStop, isStr
                 Hybrid Coding Agent
               </h1>
               <p className="text-sm text-gray-400 mb-10 max-w-md leading-relaxed">
-                Plans with Gemini, reviews with NVIDIA NIM, and writes code locally with Qwen on Ollama.
+                Uses NVIDIA NIM as the default cloud expert, Gemini as a fallback, and local Qwen on Ollama for code changes.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full text-left">
