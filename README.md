@@ -31,20 +31,20 @@ The defaults below come from .env.example. You can change model IDs and provider
 | Provider | Default model | Typical role |
 |---|---|---|
 | Google Gemini | `gemini-3.5-flash-lite` | Full cloud expert for answers, planning, architecture, code review, and intent tie-breaks |
-| NVIDIA NIM | `meta/llama-3.3-70b-instruct` | Preferred AUTO/ALL cloud expert for answers and planning when configured; Gemini fallback |
+| NVIDIA NIM | `meta/llama-3.3-70b-instruct` | Preferred cloud expert for AUTO/ALL planning and answers when configured; Gemini fallback |
 | Ollama | `qwen2.5-coder:7b-instruct-q4_K_M` | Local coding, file edits, and local-first requests |
 
-Gemini and NVIDIA NIM are peer cloud experts with the same general capabilities. AUTO and ALL currently prefer NVIDIA NIM because Gemini is returning temporary high-demand 503 responses. Gemini remains the fallback and can still be selected directly. `NVIDIA+LOCAL` puts NVIDIA first for planning and local Qwen implements; `GEMINI+LOCAL` explicitly keeps Gemini first.
+Gemini and NVIDIA NIM are peer cloud experts with the same general capabilities. When AUTO or ALL uses a cloud workflow, NVIDIA NIM is preferred and Gemini is the fallback. Explicit provider modes try the selected provider first, then use configured fallbacks. Both cloud experts can plan and answer; local Qwen handles implementation in the combined modes.
 
 ### Routing modes
 
-- `AUTO`: choose a route based on request type; prefer NVIDIA NIM, then Gemini, then local fallback.
-- `GEMINI` or `NVIDIA`: prefer the named cloud provider.
+- `AUTO`: route by request and complexity. Routine coding starts on local Qwen; larger cross-module work uses NVIDIA planning when configured, Gemini as fallback, and Qwen for implementation. General questions are answered directly.
+- `GEMINI` or `NVIDIA`: use the named cloud expert first, with configured provider fallbacks.
 - `LOCAL`: use Ollama only.
-- `GEMINI+LOCAL` or `NVIDIA+LOCAL`: try the local model first, then the selected cloud provider.
-- `ALL`: use the multi-model workflow where applicable.
+- `GEMINI+LOCAL` or `NVIDIA+LOCAL`: the selected cloud expert plans; local Qwen implements code changes.
+- `ALL`: use the multi-model workflow where applicable, preferring NVIDIA for planning, Gemini as fallback, and Qwen for implementation.
 
-`GROK` is retained as a legacy configuration alias for NVIDIA; it does not select a separate xAI provider.
+`GROK` and `GROK+LOCAL` are legacy routing aliases for NVIDIA NIM. Legacy `XAI_*` setting names also map to NVIDIA configuration; they do not connect to xAI.
 
 ## Complexity routing and self-correction
 
