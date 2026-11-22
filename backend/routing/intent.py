@@ -35,6 +35,7 @@ class Intent(str, Enum):
     CODE_QUESTION = "code_question"
     SNIPPET = "snippet"
     TASK = "task"
+    VERIFY = "verify"
 
 
 @dataclass
@@ -110,6 +111,13 @@ _READ_START = re.compile(
     re.I,
 )
 
+_VERIFY_START = re.compile(
+    r"^(?:please\s+|can you\s+|could you\s+|now\s+)?"
+    r"(?:(?:run|execute)\s+(?:the\s+)?(?:(?:python\s+-m\s+)?pytest|tests?|test suite|checks?)|"
+    r"(?:python\s+-m\s+)?pytest)\b",
+    re.I,
+)
+
 _POLITE = r"(?:(?:okay|ok)\s+|please\s+|pls\s+|can you\s+|could you\s+|would you\s+|will you\s+|i want you to\s+|i need you to\s+|i want to\s+|i need to\s+|i'd like (?:you )?to\s+|let'?s\s+|help me\s+(?:to\s+)?|go ahead and\s+)?"
 _STARTS_WITH_VERB = re.compile(rf"^{_POLITE}(?:{_TASK_VERBS})\b", re.I)
 _VERB_ANYWHERE = re.compile(rf"\b(?:{_TASK_VERBS})\b", re.I)
@@ -164,6 +172,15 @@ def project_terms(source_files: Iterable[str]) -> set[str]:
     return terms
 
 
+def is_verification_only_request(prompt: str) -> bool:
+    """Return True for a test/check command request that does not ask for edits."""
+    text = " ".join(prompt.strip().split())
+    if not _VERIFY_START.match(text):
+        return False
+    # A request to run checks and then repair code is an implementation task.
+    return not bool(re.search(r"\b(?:fix|repair|change|update|modify|rewrite|implement)\b", text, re.I))
+
+
 def classify_intent(
     prompt: str,
     has_workspace: bool = False,
@@ -174,6 +191,9 @@ def classify_intent(
 
     if not p or _GREETING.match(p):
         return IntentResult(Intent.CHAT, True, "greeting / small talk")
+
+    if is_verification_only_request(prompt):
+        return IntentResult(Intent.VERIFY, True, "read-only test or check request")
 
     has_file = bool(_FILE_REF.search(prompt))
     has_ref = bool(_PROJECT_REF.search(p)) or has_file
@@ -262,13 +282,14 @@ async def classify_with_fallback(
         "CODE_QUESTION = asks about the existing project's code\n"
         "SNIPPET = asks for a small standalone piece of code, not tied to the project\n"
         "TASK = asks to modify/add/fix something in the project's files (multi-step engineering work)\n\n"
+        "VERIFY = asks only to run tests, linters, or checks without changing files\n\n"
         f"Message: {prompt[:600]}\n\nAnswer with only the label."
     )
     try:
         text = await asyncio.wait_for(llm_call(question), timeout=timeout)
         label = re.sub(r"[^A-Z_]", "", (text or "").upper().split()[0] if (text or "").strip() else "")
         mapping = {"CHAT": Intent.CHAT, "CODE_QUESTION": Intent.CODE_QUESTION,
-                   "SNIPPET": Intent.SNIPPET, "TASK": Intent.TASK}
+                   "SNIPPET": Intent.SNIPPET, "TASK": Intent.TASK, "VERIFY": Intent.VERIFY}
         if label in mapping:
             return IntentResult(mapping[label], True, f"model tie-break ({result.reason})")
     except Exception as exc:  # timeout / provider error -> keep the rule-based guess

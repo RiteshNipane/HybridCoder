@@ -214,6 +214,8 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
             "skipped": True, "runner_used": "none",
             "command": "", "output": "No changed source files were available to check.",
             "passed_count": 0, "failed_count": 0, "returncode": 0,
+            "counts_known": False,
+            "workspace": str(root),
         }
 
     python_files = [path for path in normalized if path.suffix.lower() == ".py"]
@@ -230,7 +232,7 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
             result.get("runner_used") == "unknown"
             or "no module named pytest" in str(result.get("output", "")).lower()
         )
-        result["skipped"] = unavailable
+        result["skipped"] = unavailable or bool(result.get("runner_error"))
         result["check_passed"] = unavailable or (
             result.get("returncode", -1) == 0 and not result.get("timed_out", False)
         )
@@ -257,6 +259,7 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
                 "output": output[-_CHECK_OUTPUT_LIMIT:],
                 "returncode": returncode,
                 "timed_out": timed_out,
+                "counts_known": True,
             })
 
     if js_files:
@@ -284,6 +287,7 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
                     "failed_count": 0 if raw["returncode"] == 0 else 1,
                     "returncode": raw["returncode"],
                     "timed_out": raw["timed_out"],
+                    "counts_known": True,
                 })
 
     if not checks and scoped_tests:
@@ -297,16 +301,22 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
         result["check_passed"] = unavailable or (
             result.get("returncode", -1) == 0 and not result.get("timed_out", False)
         )
-        result["skipped"] = unavailable
+        result["skipped"] = unavailable or bool(result.get("runner_error"))
         result["command"] = f"{result.get('runner_used', 'test')} " + " ".join(scoped_tests)
         result["output"] = str(result.get("output", ""))[-_CHECK_OUTPUT_LIMIT:]
         checks.append(result)
 
     if checks:
+        failed_codes = [
+            check.get("returncode") for check in checks
+            if not check.get("check_passed") and isinstance(check.get("returncode"), int)
+            and check.get("returncode") != 0
+        ]
+        check_passed = all(bool(check.get("check_passed")) for check in checks)
         return {
             "passed": sum(int(check.get("passed", 0) or 0) for check in checks),
             "failed": sum(int(check.get("failed", 0) or 0) for check in checks),
-            "check_passed": all(bool(check.get("check_passed")) for check in checks),
+            "check_passed": check_passed,
             "skipped": all(bool(check.get("skipped")) for check in checks),
             "runner_used": " + ".join(str(check.get("runner_used", "unknown")) for check in checks),
             "command": " && ".join(str(check.get("command", "")) for check in checks),
@@ -315,10 +325,19 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
             )[-_CHECK_OUTPUT_LIMIT:],
             "passed_count": sum(int(check.get("passed", 0) or 0) for check in checks),
             "failed_count": sum(int(check.get("failed", 0) or 0) for check in checks),
-            "returncode": 0 if all(bool(check.get("check_passed")) for check in checks) else 1,
+            "returncode": 0 if check_passed else (failed_codes[0] if failed_codes else 1),
             "timed_out": any(bool(check.get("timed_out")) for check in checks),
+            "counts_known": all(bool(check.get("counts_known", True)) for check in checks),
+            "runner_error": any(bool(check.get("runner_error")) for check in checks),
+            "workspace": str(root),
             "checks": [
-                {"runner_used": check.get("runner_used"), "check_passed": check.get("check_passed"), "skipped": check.get("skipped", False)}
+                {
+                    "runner_used": check.get("runner_used"),
+                    "check_passed": check.get("check_passed"),
+                    "skipped": check.get("skipped", False),
+                    "returncode": check.get("returncode"),
+                    "runner_error": check.get("runner_error", False),
+                }
                 for check in checks
             ],
         }
@@ -329,4 +348,6 @@ async def run_scoped_checks(workspace_root: str | Path, changed_paths: Iterable[
         "command": "pre-write parser checks",
         "output": "No matching scoped tests or linter are configured; pre-write syntax checks were used where supported.",
         "passed_count": 0, "failed_count": 0, "returncode": 0, "timed_out": False,
+        "counts_known": False,
+        "workspace": str(root),
     }

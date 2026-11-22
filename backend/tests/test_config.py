@@ -8,9 +8,9 @@ from backend.config import Config, RoutingMode, LogLevel, get_config
 
 def test_config_defaults():
     cfg = Config()
-    assert cfg.gemini_model == "gemini-3.8-flash"
+    assert cfg.gemini_model == "gemini-3.5-flash-lite"
     assert cfg.nvidia_model  # configurable via NVIDIA_MODEL; default may change when NVIDIA retires models
-    assert cfg.ollama_model == "qwen2.5-coder:7b"
+    assert cfg.ollama_model == "qwen2.5-coder:7b-instruct-q4_K_M"
     assert cfg.routing_mode == RoutingMode.AUTO
     assert cfg.escalation_enabled is True
     assert cfg.port == 8000

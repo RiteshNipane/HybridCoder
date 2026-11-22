@@ -60,13 +60,39 @@ After edits, the orchestrator runs related tests where it can identify them, or 
 
 Engineering runs append one record to `logs/task_runs.jsonl`. The record includes the task ID, routing decision, retry and escalation counts, duration, reported token counts, changed paths, and baseline/final check status. The log stays local and is ignored by Git.
 
-Summarize the latest 20 recorded runs as a Markdown table:
+Run the included 20-task benchmark. Each task runs in its own temporary Python workspace with a failing test baseline. The workflow uses NVIDIA NIM for planning, Gemini as the cloud fallback, and local Ollama/Qwen for implementation. It records independent final pytest results, provider activity, end-to-end duration, and task telemetry under `logs/`.
 
 ~~~powershell
-python scripts/summarize_runs.py --last 20
+.\.venv\Scripts\python.exe scripts\benchmark_coding_tasks.py
+.\.venv\Scripts\python.exe scripts\summarize_runs.py --last 20 --file logs\benchmark_20_latest.jsonl
 ~~~
 
-No 15-20 task benchmark has been collected for this repository yet, so this README does not publish synthetic performance numbers. Run the tool after real coding tasks to produce a measured sample.
+### Measured 20-task run
+
+Run collected locally on 2026-11-22 using `nvidia/nemotron-3.5-lightning-30b-a3b` for cloud planning and `qwen2.5-coder:7b-instruct-q4_K_M` through Ollama for implementation.
+
+| Measure | Result |
+|---|---:|
+| Coding tasks | 20 |
+| Verified tasks | 17 passed, 3 failed |
+| Baseline / final pytest checks | 0 / 20 passed; 17 / 20 passed after implementation |
+| Skipped checks | 0 |
+| Cloud + local participation | NVIDIA and Qwen used on all 20 tasks |
+| Gemini fallback | Used once after NVIDIA returned an empty repair response |
+| Local repair attempts | 13 |
+| Cloud repair escalations | 4 |
+| Mean end-to-end workflow time | 28.7 seconds |
+| Reported prompt / completion tokens | 68,095 / 36,369 |
+
+Each task began with one failing pytest test and was counted as verified only when HybridCoder applied a change, its scoped check passed, an independent pytest run passed, and both cloud and local providers were observed. The workflow time includes planning, implementation, scoped verification, and any repair attempts; it excludes fixture setup and the separate final pytest run. Token totals are provider-reported and may be incomplete when a provider omits usage metadata.
+
+The three remaining failures were:
+
+- `fibonacci`: the returned sequence still had an off-by-one value (`F4` was 4 instead of 3) after two local repairs and one cloud repair.
+- `parse_bool`: the corrected test required whitespace-trimmed true/false parsing and `ValueError` for invalid input; the final implementation did not raise for invalid input.
+- `get_nested`: a missing nested key returned an intermediate dictionary instead of the supplied default.
+
+The boolean case was rerun after correcting a test expectation that initially asked for a `YES` alias absent from the task description; only the task-aligned rerun is included in the 20-task figures. These are small, isolated Python utility tasks, so the results describe this sample and do not establish performance on larger repository changes.
 
 ## Known failure modes
 

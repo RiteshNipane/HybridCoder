@@ -142,10 +142,41 @@ export function useWebSocket() {
       // 4. Test run results
       else if (type === 'test') {
         const results = event.results || {};
-        const passSummary = results.skipped
-          ? `\n\n**Verification Skipped**: ${results.output || 'No matching test or compiler check was available.'}`
-          : `\n\n**Verification Results**: ${results.passed || 0} passed, ${results.failed || 0} failed (${results.runner_used || 'auto'})`;
-        appendToLastMessage(convId, passSummary);
+        const runner = results.runner_used || 'auto';
+        let summary: string;
+        if (runner === 'patch-validation') {
+          summary = `\n\n**Patch validation failed**: ${results.output || 'The proposed edit could not be applied.'}`;
+        } else if (results.skipped) {
+          summary = `\n\n**Verification skipped**: ${results.output || 'No matching test or compiler check was available.'}`;
+        } else if (results.counts_known === false) {
+          const reason = results.timed_out
+            ? 'timed out'
+            : `exited with code ${results.returncode ?? 'unknown'}`;
+          summary = `\n\n**Verification ${results.check_passed ? 'passed' : 'failed'}**: ${runner} ${reason}; test counts were unavailable.`;
+        } else {
+          const status = results.check_passed === false ? 'failed' : 'passed';
+          summary = `\n\n**Verification ${status}**: ${results.passed ?? 0} passed, ${results.failed ?? 0} failed (${runner})`;
+        }
+        if (results.command) {
+          const command = String(results.command).replace(/`/g, '\\`');
+          summary += `\n\nCommand: \`${command}\``;
+        }
+        if (results.workspace) {
+          summary += `\n\nWorkspace: \`${String(results.workspace).replace(/`/g, '\\`')}\``;
+        }
+        const output = String(results.output || '').trim();
+        if (!results.skipped && results.check_passed === false && output) {
+          const excerpt = output.slice(-3000).replace(/```/g, '` ` `');
+          summary += `\n\nFailure output:\n\n\`\`\`text\n${excerpt}\n\`\`\``;
+        }
+        appendToLastMessage(convId, summary);
+      }
+
+      // Patch application and syntax validation are not test results.
+      else if (type === 'validation') {
+        const results = event.results || {};
+        const output = String(results.output || 'The proposed patch could not be applied.').trim();
+        appendToLastMessage(convId, `\n\n**Patch validation failed**: ${output}`);
       }
 
       // 5. Completion

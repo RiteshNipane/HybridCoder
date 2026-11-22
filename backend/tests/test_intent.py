@@ -54,6 +54,20 @@ def test_overrides():
     assert strip_override("no override here") == ("no override here", None)
 
 
+@pytest.mark.parametrize("prompt", [
+    "Execute pytest on tests/test_ship.py",
+    "Run tests/test_ship.py",
+    "python -m pytest -q --tb=short tests/test_ship.py",
+])
+def test_read_only_test_requests_are_verification(prompt):
+    assert classify_intent(prompt, has_workspace=True, known_terms=TERMS).intent == Intent.VERIFY
+
+
+def test_test_request_that_asks_for_a_fix_remains_a_task():
+    prompt = "Run pytest on tests/test_ship.py and fix any failures"
+    assert classify_intent(prompt, has_workspace=True, known_terms=TERMS).intent == Intent.TASK
+
+
 # --- whole-project build requests must go to the workspace workflow ----------------------
 import pytest as _pytest
 from backend.routing.intent import classify_intent as _ci, Intent as _Intent

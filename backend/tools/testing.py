@@ -15,6 +15,73 @@ from backend.tools.terminal import run_command
 
 logger = logging.getLogger(__name__)
 
+_TEST_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?[\\/]?(?:[A-Za-z0-9_.-]+[\\/])*"
+    r"[A-Za-z0-9_.-]+\.(?:py|tsx?|jsx?|mjs|cjs)",
+    re.IGNORECASE,
+)
+
+
+def extract_test_paths(prompt: str, workspace_root: str | Path) -> list[str]:
+    """Extract explicit test paths and keep them inside the selected workspace."""
+    root = Path(workspace_root).resolve()
+    paths: list[str] = []
+    for raw in _TEST_PATH_RE.findall(prompt):
+        candidate = Path(raw)
+        full = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        try:
+            relative = full.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"Test path is outside the selected workspace: {raw}") from exc
+        if relative not in paths:
+            paths.append(relative)
+    return paths
+
+
+def _workspace_relative_test_paths(root: Path, paths: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for raw in paths:
+        candidate = Path(raw)
+        full = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        try:
+            relative = full.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"Test path is outside the selected workspace: {raw}") from exc
+        if relative.startswith("-"):
+            raise ValueError(f"Invalid test path: {raw}")
+        normalized.append(relative)
+    return normalized
+
+
+def _captured_test_output(raw: dict, command: str) -> str:
+    """Keep runner startup and silent-exit failures visible in the chat result."""
+    output = "\n".join(
+        part for part in (str(raw.get("stdout", "")), str(raw.get("stderr", ""))) if part
+    ).strip()
+    if output:
+        return output
+    if raw.get("launch_error"):
+        detail = str(raw.get("stderr", "")).strip() or "no additional error detail was provided"
+        return f"Could not start test command `{command}`: {detail}"
+    if raw.get("timed_out"):
+        return f"Test command `{command}` timed out without producing output."
+    returncode = raw.get("returncode", -1)
+    if returncode != 0:
+        return f"Test command `{command}` exited with code {returncode} without stdout or stderr."
+    return f"Test command `{command}` exited successfully without producing output."
+
+
+def _runner_failed_to_report_results(raw: dict) -> bool:
+    output = str(raw.get("stdout", "")) + str(raw.get("stderr", ""))
+    return bool(
+        raw.get("launch_error")
+        or (
+            raw.get("returncode", 0) != 0
+            and not output.strip()
+            and not raw.get("timed_out")
+        )
+    )
+
 # ---------------------------------------------------------------------------
 # detect_test_runner
 # ---------------------------------------------------------------------------
@@ -106,15 +173,30 @@ async def run_project_tests(
             "passed": 0,
             "failed": 0,
             "errors": ["No test runner detected."],
-            "output": "",
+            "output": "No test runner detected in the selected workspace.",
             "runner_used": "unknown",
             "returncode": -1,
             "timed_out": False,
+            "check_passed": False,
+            "skipped": True,
+            "counts_known": False,
+            "command": "",
+            "workspace": str(root),
         }
 
     base_cmd = runner_cmds[runner]
     if test_path:
-        test_paths = [test_path] if isinstance(test_path, str) else test_path
+        raw_paths = [test_path] if isinstance(test_path, str) else test_path
+        try:
+            test_paths = _workspace_relative_test_paths(root, raw_paths)
+        except ValueError as exc:
+            return {
+                "passed": 0, "failed": 0, "errors": [str(exc)], "output": str(exc),
+                "runner_used": runner, "returncode": -1, "timed_out": False,
+                "check_passed": False, "skipped": False, "counts_known": False,
+                "command": "",
+                "workspace": str(root),
+            }
         # The paths are selected by the scoped verifier. Quote them as command
         # arguments because run_command executes through the user's shell.
         quoted_paths = (
@@ -132,11 +214,16 @@ async def run_project_tests(
 
     raw = await run_command(base_cmd, cwd=root, timeout=180)
 
-    combined = raw["stdout"] + "\n" + raw["stderr"]
+    combined = _captured_test_output(raw, base_cmd)
     parsed = parse_test_results(combined, runner)
     parsed["runner_used"] = runner
     parsed["returncode"] = raw["returncode"]
     parsed["timed_out"] = raw["timed_out"]
+    parsed["check_passed"] = raw["returncode"] == 0 and not raw["timed_out"]
+    parsed["skipped"] = False
+    parsed["command"] = base_cmd
+    parsed["workspace"] = str(root)
+    parsed["runner_error"] = _runner_failed_to_report_results(raw)
     return parsed
 
 
@@ -153,6 +240,7 @@ def parse_test_results(output: str, runner: str) -> dict:
     passed = 0
     failed = 0
     errors: list[str] = []
+    counts_known = False
 
     if runner == "pytest":
         # pytest can print either "5 passed, 2 failed" or "2 failed, 5 passed".
@@ -161,11 +249,16 @@ def parse_test_results(output: str, runner: str) -> dict:
         error_matches = list(re.finditer(r"(\d+)\s+errors?\b", output, re.IGNORECASE))
         if passed_matches:
             passed = int(passed_matches[-1].group(1))
+            counts_known = True
         if failed_matches:
             failed = int(failed_matches[-1].group(1))
+            counts_known = True
         if error_matches and int(error_matches[-1].group(1)):
+            counts_known = True
             for m in re.finditer(r"ERRORS?\s*\n(.+?)(?=\n={3,}|\Z)", output, re.DOTALL):
                 errors.append(m.group(1).strip())
+        if re.search(r"\bno tests ran\b", output, re.IGNORECASE):
+            counts_known = True
         # Collect FAILED lines
         for m in re.finditer(r"^FAILED (.+)$", output, re.MULTILINE):
             errors.append(m.group(1).strip())
@@ -179,6 +272,7 @@ def parse_test_results(output: str, runner: str) -> dict:
             fm = re.search(r"(\d+) failed", counts)
             passed = int(pm.group(1)) if pm else 0
             failed = int(fm.group(1)) if fm else 0
+            counts_known = bool(pm or fm or re.search(r"\d+ total", counts))
         # Collect FAIL lines
         for m2 in re.finditer(r"^\s*✕\s+(.+)$", output, re.MULTILINE):
             errors.append(m2.group(1).strip())
@@ -191,6 +285,7 @@ def parse_test_results(output: str, runner: str) -> dict:
         fm = re.search(r"(\d+) tests? failed", output, re.IGNORECASE)
         passed = int(pm.group(1)) if pm else (1 if "All tests passed" in output else 0)
         failed = int(fm.group(1)) if fm else 0
+        counts_known = bool(pm or fm or "All tests passed" in output)
         for m in re.finditer(r"FAILED (.+)", output):
             errors.append(m.group(1).strip())
 
@@ -200,6 +295,7 @@ def parse_test_results(output: str, runner: str) -> dict:
         if m:
             passed = int(m.group(1))
             failed = int(m.group(2))
+            counts_known = True
         for m2 in re.finditer(r"^FAILED (.+)$", output, re.MULTILINE):
             errors.append(m2.group(1).strip())
 
@@ -214,10 +310,12 @@ def parse_test_results(output: str, runner: str) -> dict:
         ok_pkgs = len(re.findall(r"^ok\s", output, re.MULTILINE))
         if ok_pkgs and passed == 0:
             passed = ok_pkgs  # rough count
+        counts_known = bool(passed or failed or "[no test files]" in output)
 
     return {
         "passed": passed,
         "failed": failed,
         "errors": errors,
         "output": output,
+        "counts_known": counts_known,
     }

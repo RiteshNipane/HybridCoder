@@ -183,7 +183,14 @@ async def run_command(
                 communicate_task.cancel()
         raise
     except Exception as exc:
-        result = {"returncode": -1, "stdout": "", "stderr": str(exc), "timed_out": False}
+        detail = str(exc).strip() or "no additional error detail was provided"
+        result = {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {detail}",
+            "timed_out": False,
+            "launch_error": True,
+        }
 
     if result.get("timed_out"):
         logger.warning("Command timed out after %ds: %s", timeout, cmd_str[:200])

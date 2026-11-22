@@ -27,10 +27,10 @@ def load_records(path: Path, limit: int) -> list[dict]:
     return records[-limit:] if limit > 0 else records
 
 
-def check_counts(records: list[dict], field: str) -> tuple[int, int, int]:
+def check_counts(records: list[dict], field: str, benchmark_field: str | None = None) -> tuple[int, int, int]:
     passed = failed = skipped = 0
     for record in records:
-        result = record.get(field)
+        result = record.get(benchmark_field) if benchmark_field and record.get(benchmark_field) else record.get(field)
         if not isinstance(result, dict):
             continue
         if result.get("skipped"):
@@ -46,12 +46,17 @@ def summarize(records: list[dict]) -> str:
     if not records:
         return "No task runs recorded yet. Run a coding task, then rerun this command."
 
-    durations = [float(r.get("duration_ms", 0) or 0) for r in records]
+    # Benchmark harnesses can measure the full cloud-plan + local-worker
+    # request. Prefer that end-to-end duration; otherwise use backend timing.
+    durations = [
+        float(r.get("end_to_end_duration_ms", r.get("duration_ms", 0)) or 0)
+        for r in records
+    ]
     prompt_tokens = sum(int(r.get("prompt_tokens", 0) or 0) for r in records)
     completion_tokens = sum(int(r.get("completion_tokens", 0) or 0) for r in records)
     escalations = sum(int(r.get("escalation_count", 0) or 0) for r in records)
-    before = check_counts(records, "test_before")
-    after = check_counts(records, "test_after")
+    before = check_counts(records, "test_before", "benchmark_test_before")
+    after = check_counts(records, "test_after", "benchmark_test_after")
     routes: dict[str, int] = {}
     for record in records:
         route = str(record.get("route", "unknown"))

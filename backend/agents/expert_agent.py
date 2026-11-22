@@ -42,6 +42,8 @@ You are an expert software architect and senior developer. Your job is to:
 5. Output ONLY valid JSON — no markdown fences, no commentary.
 6. The workspace may be EMPTY. For a new project, plan the real files to build it and list every one in files_to_create.
 7. All paths are RELATIVE to the workspace root. Never use absolute paths, drive letters or /tmp. Never plan scratch or verification files.
+8. Treat the current Task description as the complete authoritative request. Context and prior conversation are reference material only; do not repeat old tasks or assistant suggestions unless the current Task explicitly asks for them.
+9. Inspect the listed relevant files before planning. If one already implements the requested concept, modify that file instead of creating a duplicate with the same basename in another directory.
 
 JSON format:
 {
@@ -122,9 +124,11 @@ class ExpertAgent:
         (or None if planning failed and a single fallback task was returned).
         """
         context_block = f"\nContext:\n{task.context}\n" if task.context else ""
+        context_paths = re.findall(r"--- File: (.*?) ---", task.context or "")
+        relevant_paths = list(dict.fromkeys([*task.file_paths, *context_paths]))
         files_block = (
-            "\nRelevant files:\n" + "\n".join(f"- {p}" for p in task.file_paths)
-            if task.file_paths
+            "\nRelevant files:\n" + "\n".join(f"- {p}" for p in relevant_paths)
+            if relevant_paths
             else ""
         )
         prompt = (

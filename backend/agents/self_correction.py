@@ -36,13 +36,18 @@ def _usage_totals(usages: list[ModelUsage]) -> dict[str, int]:
 def _check_snapshot(result: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not result:
         return None
+    if result.get("runner_used") in {"implementation", "patch-validation"}:
+        return None
     return {
         "runner_used": result.get("runner_used", "unknown"),
         "command": result.get("command", ""),
         "check_passed": bool(result.get("check_passed", False)),
-        "skipped": bool(result.get("skipped", False)),
+        "skipped": bool(result.get("skipped", False) or result.get("runner_error", False)),
+        "runner_error": bool(result.get("runner_error", False)),
         "passed": int(result.get("passed", 0) or 0),
         "failed": int(result.get("failed", 0) or 0),
+        "counts_known": bool(result.get("counts_known", False)),
+        "returncode": result.get("returncode"),
     }
 
 
@@ -116,9 +121,10 @@ class SelfCorrectionLoop:
 
         pending_edits = edits
         last_result: dict[str, Any] = {
-            "passed": 0, "failed": 1, "check_passed": False, "skipped": False,
-            "runner_used": "patch-validation", "command": "validate and apply structured patches",
-            "output": initial_failure or "The local worker did not return any structured file patches.",
+            "passed": 0, "failed": 0, "check_passed": False, "skipped": True,
+            "counts_known": False,
+            "runner_used": "implementation", "command": "extract structured file patches",
+            "output": initial_failure or "The implementation worker returned no structured file patches.",
         }
         applied_paths: list[str] = []
 
@@ -133,17 +139,20 @@ class SelfCorrectionLoop:
                         last_result = await run_scoped_checks(self.workspace_root, applied_paths)
                     else:
                         last_result = {
-                            "passed": 0, "failed": 1, "check_passed": False, "skipped": False,
+                            "passed": 0, "failed": 0, "check_passed": False, "skipped": False,
+                            "counts_known": False,
                             "runner_used": "patch-validation", "command": "apply structured patches",
                             "output": "All proposed edits were rejected as outside the selected workspace.",
                         }
                 except Exception as exc:
                     last_result = {
-                        "passed": 0, "failed": 1, "check_passed": False, "skipped": False,
+                        "passed": 0, "failed": 0, "check_passed": False, "skipped": False,
+                        "counts_known": False,
                         "runner_used": "patch-validation", "command": "syntax pre-check / transactional patch apply",
                         "output": f"{type(exc).__name__}: {exc}",
                     }
-                yield {"type": "test", "results": last_result}
+                event_type = "validation" if last_result.get("runner_used") == "patch-validation" else "test"
+                yield {"type": event_type, "results": last_result}
                 pending_edits = []
 
             if last_result.get("check_passed") and initial_failure:
@@ -158,6 +167,13 @@ class SelfCorrectionLoop:
                 }
 
             if last_result.get("check_passed"):
+                break
+
+            if last_result.get("runner_error"):
+                yield {
+                    "type": "status",
+                    "message": "The verification command could not start; skipping code repair retries.",
+                }
                 break
 
             feedback = await self._build_feedback(
@@ -225,6 +241,23 @@ class SelfCorrectionLoop:
             break
 
         yield {"type": "edit", "files": applied_paths} if applied_paths else {"type": "status", "message": "No file changes were applied."}
+        if not applied_paths and last_result.get("runner_used") == "implementation":
+            yield {
+                "type": "text",
+                "content": (
+                    "\n\n**Implementation incomplete:** no structured file patch was produced, "
+                    "so no files changed and no tests were run.\n\n"
+                    + str(last_result.get("output", ""))[-1200:]
+                ),
+            }
+        elif not applied_paths and last_result.get("runner_used") == "patch-validation":
+            yield {
+                "type": "text",
+                "content": (
+                    "\n\n**Patch rejected:** no file changes were applied. See the validation "
+                    "details above for the exact reason.\n"
+                ),
+            }
         await append_task_run({
             "task_id": run_id,
             "route": route,
@@ -236,6 +269,17 @@ class SelfCorrectionLoop:
             **_usage_totals(usages),
             "test_before": _check_snapshot(test_before),
             "test_after": _check_snapshot(last_result),
+            "implementation_outcome": {
+                "status": (
+                    "patch_validation_failed" if last_result.get("runner_used") == "patch-validation"
+                    else "no_patch" if last_result.get("runner_used") == "implementation"
+                    else "verification_unavailable" if last_result.get("runner_error")
+                    else "verification_skipped" if last_result.get("skipped")
+                    else "verified" if last_result.get("check_passed")
+                    else "check_failed"
+                ),
+                "detail": str(last_result.get("output", ""))[-1000:],
+            },
             "changed_files": applied_paths,
             "success": bool(last_result.get("check_passed")),
         })

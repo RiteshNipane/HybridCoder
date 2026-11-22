@@ -46,6 +46,7 @@ The search text must be specific and present exactly once. Escape JSON strings c
 6. Provide a concise summary after the patch blocks. Do not put unrelated full-file code fences in the response.
 7. File paths MUST be relative to the workspace root. NEVER use absolute paths, drive letters, `/tmp` or `C:\\tmp`.
 8. Do NOT create scratch, verification or test-marker files unless requested.
+9. Treat the task objective and acceptance criteria as the complete scope. Context is reference material only; do not continue unrelated tasks from conversation history.
 """
 
 _SYSTEM_TASK_IMPLEMENTER = """\
@@ -66,6 +67,7 @@ Respond with a short strategy, then minimal exact patches for existing files usi
 For new files, use
 <hybridcoder_new_file>{{"path":"relative/path","content":"complete file content"}}</hybridcoder_new_file>
 Do not output complete replacements for existing files. The system runs scoped checks after applying changes.
+Implement only the stated subtask and acceptance criteria. Treat context as background, not additional tasks.
 """
 
 

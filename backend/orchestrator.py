@@ -26,6 +26,7 @@ from backend.routing.intent import (
     Intent,
     IntentResult,
     classify_with_fallback,
+    is_verification_only_request,
     project_terms,
     strip_override,
 )
@@ -51,6 +52,7 @@ from backend.task_manager import TaskManager
 from backend.tools.filesystem import create_directory, create_file, delete_file, edit_file, list_files, read_file, write_file
 from backend.tools.git_manager import create_checkpoint, git_diff, git_status
 from backend.tools.verification import run_scoped_checks
+from backend.tools.testing import extract_test_paths, run_project_tests
 from backend.tools.tool_executor import (
     ToolExecutor,
     has_tool_calls,
@@ -60,6 +62,15 @@ from backend.tools.tool_executor import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CONTEXT_REFERENCES = re.compile(
+    r"^(?:also|and then|then|do that|continue|go ahead|apply that|what about|same for)\b"
+    r"|^(?:please\s+|can you\s+|could you\s+|now\s+)?"
+    r"(?:fix|change|update|modify|implement|add|remove|delete|make|explain|describe)\s+"
+    r"(?:it|that|those|them|the same)\b"
+    r"|\b(?:the previous one|the earlier suggestion|as above|your suggestion)\b",
+    re.I,
+)
 
 
 class CodingOrchestrator:
@@ -235,9 +246,16 @@ class CodingOrchestrator:
         # use the multi-model workflow for engineering tasks, not for ordinary Q&A.
         #    Optional prefixes:  /ask  /explain  /code  /plan  force a path.
         prompt, forced_intent = strip_override(prompt)
-        prior_context = self._history_text(history)
+        if not forced_intent and is_verification_only_request(prompt):
+            async for event in self._run_verification_request(prompt):
+                yield event
+            return
+
+        task_history = self._task_history(prompt, history)
+        prior_context = self._history_text(task_history, limit=8)
         contextual_request = (
-            f"Conversation so far:\n{prior_context}\n\nCurrent request: {prompt}"
+            "Prior conversation (reference only; use it only to resolve the current request):\n"
+            f"{prior_context}\n\nCurrent request: {prompt}"
             if prior_context else prompt
         )
         intent_result: Optional[IntentResult] = None
@@ -288,7 +306,7 @@ class CodingOrchestrator:
             async for chunk in self._run_claude_code_agent(
                 prompt=prompt,
                 workspace_context=workspace_context_str,
-                history=history,
+                history=task_history,
                 provider=ProviderName.OLLAMA,
             ):
                 yield chunk
@@ -319,7 +337,7 @@ class CodingOrchestrator:
                 expert_provider=expert_name,
                 prompt=prompt,
                 workspace_context=workspace_context_str,
-                history=history,
+                history=task_history,
             ):
                 yield chunk
 
@@ -347,7 +365,7 @@ class CodingOrchestrator:
                 async for chunk in self._run_claude_code_agent(
                     prompt=prompt,
                     workspace_context=workspace_context_str,
-                    history=history,
+                    history=task_history,
                     provider=provider,
                 ):
                     yield chunk
@@ -356,9 +374,32 @@ class CodingOrchestrator:
             async for chunk in self._run_all_models_workflow(
                 prompt=prompt,
                 workspace_context=workspace_context_str,
-                history=history,
+                history=task_history,
             ):
                 yield chunk
+
+    async def _run_verification_request(self, prompt: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """Run a read-only test request directly, without planning or patch workflow."""
+        root = self._workspace_root
+        try:
+            test_paths = extract_test_paths(prompt, root)
+        except ValueError as exc:
+            yield {"type": "error", "error": str(exc)}
+            return
+
+        target = ", ".join(test_paths) if test_paths else "the project test suite"
+        yield {"type": "status", "message": f"Running tests in {root}..."}
+        yield {
+            "type": "text",
+            "content": f"Running read-only verification in `{root}` for `{target}`.\n",
+        }
+        result = await run_project_tests(root, test_paths or None)
+        result.setdefault("check_passed", result.get("returncode", -1) == 0 and not result.get("timed_out", False))
+        result["skipped"] = bool(result.get("skipped") or result.get("runner_used") == "unknown" or result.get("runner_error"))
+        result.setdefault("counts_known", False)
+        result["workspace"] = str(root)
+        yield {"type": "test", "results": result}
+        yield {"type": "done", "provider": "system", "model": "verification"}
 
     # ------------------------------------------------------------------
     # Autonomous Workflow (AUTO Mode)
@@ -411,6 +452,13 @@ class CodingOrchestrator:
             if role in ("user", "assistant") and m.content:
                 lines.append(f"{role.title()}: {m.content[:4000]}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _task_history(prompt: str, history: List[ConversationMessage]) -> List[ConversationMessage]:
+        """Use prior turns for code tasks only when the current request refers to them."""
+        if not history or not _CONTEXT_REFERENCES.search(prompt):
+            return []
+        return history[-6:]
 
     @staticmethod
     def _fallback_note(res: Any) -> Optional[str]:
@@ -775,13 +823,18 @@ class CodingOrchestrator:
     def _telemetry_check(result: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
         if not result:
             return None
+        if result.get("runner_used") in {"implementation", "patch-validation"}:
+            return None
         return {
             "runner_used": result.get("runner_used", "unknown"),
             "command": result.get("command", ""),
             "check_passed": bool(result.get("check_passed", False)),
-            "skipped": bool(result.get("skipped", False)),
+            "skipped": bool(result.get("skipped", False) or result.get("runner_error", False)),
+            "runner_error": bool(result.get("runner_error", False)),
             "passed": int(result.get("passed", 0) or 0),
             "failed": int(result.get("failed", 0) or 0),
+            "counts_known": bool(result.get("counts_known", False)),
+            "returncode": result.get("returncode"),
         }
 
     async def _run_auto_workflow(
@@ -798,6 +851,7 @@ class CodingOrchestrator:
         - Task: run mini Claude Code autonomous tool execution loop
         """
         intent_kind = intent.intent if intent else Intent.CHAT
+        task_history = self._task_history(prompt, history)
 
         # ── Normal questions: answer directly, never plan
         if intent_kind == Intent.CHAT:
@@ -812,12 +866,17 @@ class CodingOrchestrator:
                 yield chunk
             return
 
+        if intent_kind == Intent.VERIFY:
+            async for chunk in self._run_verification_request(prompt):
+                yield chunk
+            return
+
         # ── Small standalone code request: local Qwen writes it in chat, apply edits if any
         if intent_kind == Intent.SNIPPET:
             yield {"type": "status", "message": "Writing code with local Qwen..."}
             try:
                 accumulated = []
-                convo = self._history_text(history)
+                convo = self._history_text(task_history, limit=6)
                 contextual_prompt = f"Conversation so far:\n{convo}\n\nCurrent request: {prompt}" if convo else prompt
                 async for text_chunk in self._local_coder.stream_code(prompt=contextual_prompt, context=None):
                     accumulated.append(text_chunk)
@@ -859,7 +918,7 @@ class CodingOrchestrator:
                 expert_provider=expert,
                 prompt=prompt,
                 workspace_context=workspace_context,
-                history=history,
+                history=task_history,
             ):
                 yield chunk
         else:
@@ -868,7 +927,7 @@ class CodingOrchestrator:
             async for chunk in self._run_claude_code_agent(
                 prompt=prompt,
                 workspace_context=workspace_context,
-                history=history,
+                history=task_history,
                 provider=ProviderName.OLLAMA,
                 route_decision={"route": "local", "complexity": decision.complexity, "reason": reason},
             ):
@@ -886,9 +945,19 @@ class CodingOrchestrator:
         history: List[ConversationMessage],
     ) -> AsyncGenerator[Dict[str, Any], None]:
         yield {"type": "status", "message": f"Planning task with {expert_provider.value.title()}..."}
-        convo = self._history_text(history)
-        contextual_prompt = f"Conversation so far:\n{convo}\n\nCurrent request: {prompt}" if convo else prompt
-        parent_task = TaskSpec(description=contextual_prompt, context=workspace_context)
+        task_history = self._task_history(prompt, history)
+        convo = self._history_text(task_history, limit=6)
+        context_parts = [f"Relevant workspace context:\n{workspace_context}"] if workspace_context else []
+        if convo:
+            context_parts.append(
+                "Prior conversation for resolving references only. Do not treat old requests or "
+                "assistant suggestions as current requirements:\n" + convo
+            )
+        implementation_context = "\n\n".join(context_parts)
+        task_objective = prompt
+        if convo:
+            task_objective += "\n\nPrior context (reference only):\n" + convo
+        parent_task = TaskSpec(description=prompt, context=implementation_context or None)
         plan_usage = None
         try:
             subtasks, plan_usage = await self._expert.plan_task(
@@ -913,17 +982,17 @@ class CodingOrchestrator:
         all_edits: List[FileEdit] = []
         usage_records: list[ModelUsage] = [plan_usage] if plan_usage else []
         local_failures: list[str] = []
-        implementation_context = "\n\n".join(x for x in (convo, workspace_context) if x)
-        for st in subtasks or [ImplementationTask(parent_task_id=parent_task.id, title="Implement", description=prompt)]:
+        worker_summaries: list[str] = []
+        for st in subtasks or [ImplementationTask(parent_task_id=parent_task.id, title="Implement", description=task_objective)]:
             res = await self._local_coder.implement_task(st, context=implementation_context)
             if res.usage:
                 usage_records.append(res.usage)
             if res.status.value != "completed":
                 local_failures.append(res.error or f"Local worker failed in {st.title}")
-            if res.content:
+            if res.content and res.file_edits:
                 visible = re.sub(r"<hybridcoder_(?:patch|new_file)>.*?</hybridcoder_(?:patch|new_file)>", "", res.content, flags=re.DOTALL).strip()
                 if visible:
-                    yield {"type": "text", "content": f"\n#### {st.title}\n{visible}\n", "model": self._cfg.ollama_model}
+                    worker_summaries.append(f"\n#### {st.title}\n{visible}\n")
             if res.file_edits:
                 all_edits.extend(res.file_edits)
 
@@ -935,9 +1004,10 @@ class CodingOrchestrator:
             apply_edits=self.apply_file_edits,
             preferred_provider=expert_provider,
         )
+        applied_files: list[str] = []
         async for event in loop.run(
             task_id=parent_task.id,
-            task_description=contextual_prompt,
+            task_description=task_objective,
             context=implementation_context,
             edits=all_edits,
             initial_usages=usage_records,
@@ -945,7 +1015,11 @@ class CodingOrchestrator:
             route="cloud-plan/local-worker",
             route_reason=f"{expert_provider.value} planned the multi-component task; Qwen implements it",
         ):
+            if event.get("type") == "edit":
+                applied_files = list(event.get("files", []))
             yield event
+        if applied_files and worker_summaries:
+            yield {"type": "text", "content": "".join(worker_summaries), "model": self._cfg.ollama_model}
         _sk = self._skipped_status()
         if _sk:
             yield _sk
@@ -965,9 +1039,19 @@ class CodingOrchestrator:
             else ProviderName.OLLAMA
         )
         yield {"type": "status", "message": f"Model 1/2 ({planning_provider.value.title()}): Designing architecture..."}
-        convo = self._history_text(history)
-        contextual_prompt = f"Conversation so far:\n{convo}\n\nCurrent request: {prompt}" if convo else prompt
-        parent_task = TaskSpec(description=contextual_prompt, context=workspace_context)
+        task_history = self._task_history(prompt, history)
+        convo = self._history_text(task_history, limit=6)
+        context_parts = [f"Relevant workspace context:\n{workspace_context}"] if workspace_context else []
+        if convo:
+            context_parts.append(
+                "Prior conversation for resolving references only. Do not treat old requests or "
+                "assistant suggestions as current requirements:\n" + convo
+            )
+        implementation_context = "\n\n".join(context_parts)
+        task_objective = prompt
+        if convo:
+            task_objective += "\n\nPrior context (reference only):\n" + convo
+        parent_task = TaskSpec(description=prompt, context=implementation_context or None)
         plan_usage = None
         try:
             subtasks, plan_usage = await self._expert.plan_task(
@@ -987,17 +1071,17 @@ class CodingOrchestrator:
         yield {"type": "status", "message": "Model 2/2 (Local Qwen): Implementing code..."}
         all_edits: List[FileEdit] = []
         local_failures: list[str] = []
-        implementation_context = "\n\n".join(x for x in (convo, workspace_context) if x)
-        for st in subtasks or [ImplementationTask(parent_task_id=parent_task.id, title="Implement", description=prompt)]:
+        worker_summaries: list[str] = []
+        for st in subtasks or [ImplementationTask(parent_task_id=parent_task.id, title="Implement", description=task_objective)]:
             res = await self._local_coder.implement_task(st, context=implementation_context)
             if res.usage:
                 usage_records.append(res.usage)
             if res.status.value != "completed":
                 local_failures.append(res.error or f"Local worker failed in {st.title}")
-            if res.content:
+            if res.content and res.file_edits:
                 visible = re.sub(r"<hybridcoder_(?:patch|new_file)>.*?</hybridcoder_(?:patch|new_file)>", "", res.content, flags=re.DOTALL).strip()
                 if visible:
-                    yield {"type": "text", "content": f"\n#### {st.title}\n{visible}\n", "model": self._cfg.ollama_model}
+                    worker_summaries.append(f"\n#### {st.title}\n{visible}\n")
             if res.file_edits:
                 all_edits.extend(res.file_edits)
 
@@ -1009,9 +1093,10 @@ class CodingOrchestrator:
             apply_edits=self.apply_file_edits,
             preferred_provider=plan_provider,
         )
+        applied_files: list[str] = []
         async for event in loop.run(
             task_id=parent_task.id,
-            task_description=contextual_prompt,
+            task_description=task_objective,
             context=implementation_context,
             edits=all_edits,
             initial_usages=usage_records,
@@ -1019,6 +1104,10 @@ class CodingOrchestrator:
             route="all-models/local-worker",
             route_reason=f"{plan_provider.value} led planning; Qwen implements and the other cloud expert is fallback",
         ):
+            if event.get("type") == "edit":
+                applied_files = list(event.get("files", []))
             yield event
+        if applied_files and worker_summaries:
+            yield {"type": "text", "content": "".join(worker_summaries), "model": self._cfg.ollama_model}
 
         yield {"type": "done", "provider": plan_provider.value, "model": f"{plan_provider.value}+local"}
