@@ -162,12 +162,4 @@ Full prompt injection prevention is an active research area. Users should be cau
 
 ## Reporting Security Issues
 
-If you discover a security vulnerability, please **do not** open a public GitHub issue.
-
-Instead, email: `security@example.com` (replace with your actual contact)
-
-Include:
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if any)
+If you discover a security vulnerability, feel free to open a github public issue.
