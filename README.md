@@ -4,6 +4,33 @@ HybridCoder is a local-first, multi-model coding assistant for chatting about so
 
 ![HybridCoder system architecture](docs/images/system-architecture.svg)
 
+## Frontend and screenshots
+
+The frontend draws animated ASCII art scenes behind the chat interface using `ascii-things`. Users can choose a scene, pause the animation, and adjust its speed.
+
+![HybridCoder new conversation screen with example prompts and the ASCII art background](docs/images/new-conversation.png)
+
+The conversation view shows a cloud plan, modified files, and the local implementation workflow.
+
+![HybridCoder conversation showing the agent plan and modified files](docs/images/agent-workflow.png)
+
+### Working with PromptPump
+
+PromptPump can prepare a repository-aware, structured coding prompt, and HybridCoder can then work on the same repository through its selected workspace, file tools, and built-in terminal. A practical workflow is:
+
+1. Select the PromptPump repository as the HybridCoder workspace and open its workspace terminal.
+2. Run `promptpump doctor`, then use `promptpump run "describe the change"` to generate a prompt grounded in that repository.
+3. Review and paste the generated prompt into HybridCoder. HybridCoder can inspect and edit the selected project, run its tests or checks in the terminal, and use its cloud-planning plus local-coding workflow when appropriate.
+
+This is a useful manual handoff between two complementary tools: PromptPump specializes in preparing context-rich prompts, while HybridCoder handles workspace changes and verification. There is no dedicated automatic PromptPump connector yet, so the generated prompt is passed through the clipboard/chat rather than exchanged through a direct API. For example, from the PromptPump workspace terminal:
+
+~~~powershell
+promptpump doctor
+promptpump run "add retry handling to the Ollama client"
+~~~
+
+After reviewing the generated prompt, paste it into the HybridCoder chat with the PromptPump repository still selected as the workspace.
+
 ## What it does
 
 - Provides a streaming chat interface with conversations saved in the browser.
