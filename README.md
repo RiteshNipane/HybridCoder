@@ -152,7 +152,7 @@ Ollama and cloud credentials are optional individually. Configure at least one p
 From PowerShell:
 
 ~~~powershell
-git clone https://github.com/YOUR_USERNAME/HybridCoder.git
+git clone https://github.com/RiteshNipane/HybridCoder.git
 cd HybridCoder
 
 py -3.11 -m venv .venv
